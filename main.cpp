@@ -31,6 +31,7 @@ struct TransmittingThreadData
 struct Boat
 {
     int msg_type;
+    int id;
     int capacity;       
     bool onTrip;   //true - on trip, false - boat in port
     int captainId; //process being captain on current trip
@@ -39,16 +40,18 @@ struct Boat
 //function for listening thread - receiving messages
 void *listen(void *voidThreadData)
 {
+
     pthread_detach(pthread_self());
     ListeningThreadData *threadData = (ListeningThreadData *) voidThreadData;
     Boat *buffer = new Boat;   
     MPI_Status *status = threadData->status;
+    
     while(*(threadData->run))
     {
         MPI_Recv(buffer, sizeof(Boat), MPI_BYTE, 0, 0, MPI_COMM_WORLD, status); 
         switch(buffer->msg_type){
             case WANNA_PONNY_MSG:
-                printf("WANNA_PONNY_MSG");
+                cout<<"Tourist "<< buffer->id <<" want a pony suit!\n";
                 break;
             default:
                 break; 
@@ -85,6 +88,8 @@ void visit(bool *run, Boat *boats, queue<int> *ponyQueue, queue<int> *boatQueue,
 
         Boat *wanna_ponny = new Boat;
         (*wanna_ponny).msg_type = WANNA_PONNY_MSG;
+        (*wanna_ponny).id = (*rank);
+
         for(int i = 1; i < (*size); i++)
         {
             MPI_Send( wanna_ponny, sizeof(Boat), MPI_BYTE, i, 0, MPI_COMM_WORLD); //send array with boats capacity
@@ -104,6 +109,7 @@ int main(int argc, char **argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+
     if(argc != 5)
     {
 	    MPI_Finalize();
@@ -115,10 +121,12 @@ int main(int argc, char **argv)
     const int numberOfBoats = atoi(argv[2]);
     const int maxBoatCapacity = atoi(argv[3]);
     const int maxVisitorWeight = atoi(argv[4]);
+
     //initialization
     //data, variables
     srand(time(NULL));   
     bool run = true;
+
     Boat *boats = new Boat[numberOfBoats]; //capacity of each boat 
     if (rank == 0)
     {
@@ -148,29 +156,31 @@ int main(int argc, char **argv)
     listeningThreadData->ponyQueue = ponyQueue;
     listeningThreadData->boatQueue = boatQueue;
     pthread_t listeningThread;
+
     if (pthread_create(&listeningThread, NULL, listen, (void *) listeningThreadData))
     {
-        cout << "Error encountered creating thread.";
         MPI_Finalize();
         exit(0);
-    }
+    }   
+    cout<<"Listening thread created - rank: "<<rank<<"\n";
+    
+    
+    // //create transmitting thread - receiving messages
+    // TransmittingThreadData *transmittingThreadData = new TransmittingThreadData;
+    // transmittingThreadData->run = &run;
+    // pthread_t transmittingThread;
+    // if (pthread_create(&transmittingThread, NULL, transmit, (void *) transmittingThreadData))
+    // {
+    //     MPI_Finalize();
+    //     exit(0);
+    // }
 
-    //create transmitting thread - receiving messages
-    TransmittingThreadData *transmittingThreadData = new TransmittingThreadData;
-    transmittingThreadData->run = &run;
-    pthread_t transmittingThread;
-    if (pthread_create(&transmittingThread, NULL, transmit, (void *) transmittingThreadData))
-    {
-        cout << "Error encountered creating thread.";
-        MPI_Finalize();
-        exit(0);
-    }
-
-//initializatin completed, starting main logic
+    //initializatin completed, starting main logic
     visit(&run, boats, ponyQueue, boatQueue, &rank, &size, &status);
+
 
     MPI_Finalize();
     delete[] boats;
     delete listeningThreadData;
-    delete transmittingThreadData;
+    // delete transmittingThreadData;
 }
