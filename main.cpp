@@ -61,13 +61,13 @@ void *listen(void *voidThreadData)
         switch(buffer->msgType){
             case WANNA_PONNY_MSG:
                 cout<<"Tourist "<< buffer->id <<" want a pony suit!\n";
-                pthread_cond_signal(&ponySuitCond);
+                pthread_cond_signal(&ponySuitCond); //that's only for now - to test pthread_cond_signal
+                //todo
+                //send message about having pony suit or not
                 break;
             default:
                 break; 
         }
-        //todo
-        //MPI_Recv(&sorted, TABSIZE-(size-1), MPI_INT, size-1, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
     }
 
     delete buffer;
@@ -102,7 +102,6 @@ void visit(bool *run, Packet *boats, queue<int> *ponyQueue, queue<int> *boatQueu
         Packet *wanna_ponny = new Packet;
         (*wanna_ponny).msgType = WANNA_PONNY_MSG;
         (*wanna_ponny).id = (*rank);
-
 
         for(int i = 0; i < (*size); i++)
         {
