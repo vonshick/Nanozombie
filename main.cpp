@@ -93,8 +93,7 @@ int main(int argc, char **argv)
 //initialization
     //data, variables
     srand(time(NULL));   
-    bool *run;
-    *run = true;
+    bool run = true;
     Boat *boats = new Boat[numberOfBoats]; //capacity of each boat 
     if (rank == 0)
     {
@@ -110,14 +109,15 @@ int main(int argc, char **argv)
     }
     else
     {
-        MPI_Recv(&boats, numberOfBoats * sizeof(Boat), MPI_BYTE, 0, 0, MPI_COMM_WORLD, &status); //wait for boats capacity
+        MPI_Recv(boats, numberOfBoats * sizeof(Boat), MPI_BYTE, 0, 0, MPI_COMM_WORLD, &status); //wait for boats capacity
     }
+
     queue<int> *ponyQueue;  //queue for pony, storing process id
     queue<int> *boatQueue;  //queue for boat
 
     //create listening thread - receiving messages
     ListeningThreadData *listeningThreadData = new ListeningThreadData;
-    listeningThreadData->run = run;
+    listeningThreadData->run = &run;
     listeningThreadData->ponyQueue = ponyQueue;
     listeningThreadData->boatQueue = boatQueue;
     pthread_t listeningThread;
@@ -130,7 +130,7 @@ int main(int argc, char **argv)
 
     //create transmitting thread - receiving messages
     TransmittingThreadData *transmittingThreadData = new TransmittingThreadData;
-    transmittingThreadData->run = run;
+    transmittingThreadData->run = &run;
     pthread_t transmittingThread;
     if (pthread_create(&transmittingThread, NULL, transmit, (void *) transmittingThreadData))
     {
@@ -140,10 +140,10 @@ int main(int argc, char **argv)
     }
 
 //initializatin completed, starting main logic
-    visit(run, boats, ponyQueue, boatQueue);
+    visit(&run, boats, ponyQueue, boatQueue);
 
     MPI_Finalize();
-    delete[] boats;
-    delete listeningThreadData;
-    delete transmittingThreadData;
+//     delete[] boats;
+//     delete listeningThreadData;
+//     delete transmittingThreadData;
 }
