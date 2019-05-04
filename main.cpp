@@ -45,7 +45,6 @@ void *listen(void *voidThreadData)
     MPI_Status *status = threadData->status;
     while(*(threadData->run))
     {
-        printf("JEstem otrzymuje");
         MPI_Recv(buffer, sizeof(Boat), MPI_BYTE, 0, 0, MPI_COMM_WORLD, status); 
         switch(buffer->msg_type){
             case WANNA_PONNY_MSG:
@@ -80,7 +79,6 @@ void visit(bool *run, Boat *boats, queue<int> *ponyQueue, queue<int> *boatQueue,
 {
     while(*run)
     {
-        printf("JEstem wizytuje");
 
         int wait_milisec = (rand() % (VISITOR_MAX_WAIT-VISITOR_MIN_WAIT)*1000) + VISITOR_MIN_WAIT*1000;
         usleep(wait_milisec*1000);
@@ -101,7 +99,6 @@ void visit(bool *run, Boat *boats, queue<int> *ponyQueue, queue<int> *boatQueue,
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
-    cout<<"JEZDYM!!!!";
     MPI_Status status;
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -118,12 +115,10 @@ int main(int argc, char **argv)
     const int numberOfBoats = atoi(argv[2]);
     const int maxBoatCapacity = atoi(argv[3]);
     const int maxVisitorWeight = atoi(argv[4]);
-    cout<<"JEZDYM";
-//initialization
+    //initialization
     //data, variables
     srand(time(NULL));   
     bool run = true;
-    printf("JESTEM!!!");
     Boat *boats = new Boat[numberOfBoats]; //capacity of each boat 
     if (rank == 0)
     {
@@ -153,8 +148,6 @@ int main(int argc, char **argv)
     listeningThreadData->ponyQueue = ponyQueue;
     listeningThreadData->boatQueue = boatQueue;
     pthread_t listeningThread;
-    printf("JEstem !");
-
     if (pthread_create(&listeningThread, NULL, listen, (void *) listeningThreadData))
     {
         cout << "Error encountered creating thread.";
@@ -166,15 +159,12 @@ int main(int argc, char **argv)
     TransmittingThreadData *transmittingThreadData = new TransmittingThreadData;
     transmittingThreadData->run = &run;
     pthread_t transmittingThread;
-    printf("JEstem !!!");
-
     if (pthread_create(&transmittingThread, NULL, transmit, (void *) transmittingThreadData))
     {
         cout << "Error encountered creating thread.";
         MPI_Finalize();
         exit(0);
     }
-    printf("JEstem hej!!!");
 
 //initializatin completed, starting main logic
     visit(&run, boats, ponyQueue, boatQueue, &rank, &size, &status);
