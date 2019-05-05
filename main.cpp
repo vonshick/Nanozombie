@@ -22,9 +22,9 @@ const int VISITOR_MAX_WAIT = 10;    //seconds
 const int VISITOR_MIN_WAIT = 2;     //seconds
 
 int numberOfPonies;
-const int numberOfBoats;
-const int maxBoatCapacity;
-const int maxVisitorWeight;
+int numberOfBoats;
+int maxBoatCapacity;
+int maxVisitorWeight;
 
 pthread_cond_t ponySuitCond;
 pthread_mutex_t ponySuitMutex;
