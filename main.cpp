@@ -21,11 +21,6 @@ using namespace std;
 const int VISITOR_MAX_WAIT = 10;    //seconds
 const int VISITOR_MIN_WAIT = 2;     //seconds
 
-int numberOfPonies;
-int numberOfBoats;
-int maxBoatCapacity;
-int maxVisitorWeight;
-
 pthread_cond_t ponySuitCond;
 pthread_mutex_t ponySuitMutex;
 
@@ -47,6 +42,22 @@ struct Packet
     bool boatOnTrip;   //true - on trip, false - boat in port
     int captainId; //process being captain on current trip
 };
+
+struct VisitThreadData
+{
+    bool *run; 
+    Packet *boats;
+    int numberOfPonies;
+    int numberOfBoats;
+    int maxBoatCapacity;
+    int maxVisitorWeight;
+    queue<int> *ponyQueue;
+    queue<int> *boatQueue; 
+    int *rank; 
+    int *size; 
+    int *lamportClock;
+};
+
 
 //function for listening thread - receiving messages
 void *listen(void *voidThreadData)
@@ -77,13 +88,16 @@ void *listen(void *voidThreadData)
 }
 
 //main thread function, visitor logic
-void visit(bool *run, Packet *boats, queue<int> *ponyQueue, queue<int> *boatQueue, int *rank, int *size, int *lamportClock)
+void visit(VisitThreadData *visitThreadData)
 {   
+
+    int *size = visitThreadData->size;
+    int *rank = visitThreadData->rank;
+    bool *run = visitThreadData->run;
+    cout<<"Tourist "<<(*rank)<<" is registered!\n";
 
     while(*run)
     {
-        cout<<"Tourist "<<(*rank)<<" is registered!\n";
-
         int waitMilisec = (rand() % (VISITOR_MAX_WAIT-VISITOR_MIN_WAIT)*1000) + VISITOR_MIN_WAIT*1000;
         usleep(waitMilisec*1000);
 
@@ -96,7 +110,7 @@ void visit(bool *run, Packet *boats, queue<int> *ponyQueue, queue<int> *boatQueu
             }
         }    
 
-        for(int i = 0; i < (*size) - numberOfPonies; i++ ){ //if we got (numberOfTourists - numberOfPonies) answers that suit is free we can be sure that's true and take it
+        for(int i = 0; i < (*size) - visitThreadData->numberOfPonies; i++ ){ //if we got (numberOfTourists - numberOfPonies) answers that suit is free we can be sure that's true and take it
             pthread_mutex_lock(&ponySuitMutex);
             pthread_cond_wait(&ponySuitCond, &ponySuitMutex); //wait for signal from listening thread 
             cout<<"Tourist "<<(*rank)<<" got one permission to take pony suit\n";
@@ -119,55 +133,61 @@ int main(int argc, char **argv)
 	    exit(0);
     }
 
-    MPI_Init(&argc, &argv);
-    int rank, size;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
-
-    numberOfPonies = atoi(argv[1]);
-    numberOfBoats = atoi(argv[2]);
-    maxBoatCapacity = atoi(argv[3]);
-    maxVisitorWeight = atoi(argv[4]);
-
     //initialization
     //data, variables
-    srand(time(NULL));  
+
+    bool run = true;
+    int lamportClock = 0, rank, size;
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     pthread_cond_init(&ponySuitCond, NULL);
     pthread_mutex_init(&ponySuitMutex, NULL); 
 
-    bool run = true;
-
-    Packet *boats = new Packet[numberOfBoats]; //capacity of each boat 
-    if (rank == 0)
-    {
-        for(int i = 0; i < numberOfBoats; i++)
-        {
-            boats[i].capacity = (rand() % maxBoatCapacity)  + 1;
-            boats[i].boatOnTrip = false;
-        }
-        for(int i = 1; i < size; i++)
-        {
-            MPI_Send(boats, numberOfBoats * sizeof(Packet), MPI_BYTE, i, INITIALIZATION, MPI_COMM_WORLD); //send array with boats capacity
-        }        
-    }
-    else
-    {
-        MPI_Recv(boats, numberOfBoats * sizeof(Packet), MPI_BYTE, 0, INITIALIZATION, MPI_COMM_WORLD, MPI_STATUS_IGNORE); //wait for boats capacity
-    }
-
     queue<int> *ponyQueue;  //queue for pony, storing process id
     queue<int> *boatQueue;  //queue for boat
-    int lamportClock = 0;   
 
-    //create listening thread - receiving messages
+    VisitThreadData *visitThreadData = new VisitThreadData;
+    visitThreadData->run = &run;
+    visitThreadData->lamportClock = &lamportClock;
+    visitThreadData->rank = &rank; 
+    visitThreadData->size = &size;
+    visitThreadData->ponyQueue = ponyQueue;
+    visitThreadData->boatQueue = boatQueue;
+    visitThreadData->numberOfPonies = atoi(argv[1]);
+    visitThreadData->numberOfBoats = atoi(argv[2]);
+    visitThreadData->maxBoatCapacity = atoi(argv[3]);
+    visitThreadData->maxVisitorWeight = atoi(argv[4]);
+
     ListeningThreadData *listeningThreadData = new ListeningThreadData;
     listeningThreadData->run = &run;
     listeningThreadData->lamportClock = &lamportClock;
     listeningThreadData->ponyQueue = ponyQueue;
     listeningThreadData->boatQueue = boatQueue;
-    pthread_t listeningThread;
 
+    srand(time(NULL));  
+
+    Packet *boats = new Packet[visitThreadData->numberOfBoats]; //capacity of each boat 
+    if (rank == 0)
+    {
+        for(int i = 0; i < visitThreadData->numberOfBoats; i++)
+        {
+            boats[i].capacity = (rand() % visitThreadData->maxBoatCapacity)  + 1;
+            boats[i].boatOnTrip = false;
+        }
+        for(int i = 1; i < size; i++)
+        {
+            MPI_Send(boats, visitThreadData->numberOfBoats * sizeof(Packet), MPI_BYTE, i, INITIALIZATION, MPI_COMM_WORLD); //send array with boats capacity
+        }        
+    }
+    else
+    {
+        MPI_Recv(boats, visitThreadData->numberOfBoats * sizeof(Packet), MPI_BYTE, 0, INITIALIZATION, MPI_COMM_WORLD, MPI_STATUS_IGNORE); //wait for boats capacity
+    }
+
+    //create listening thread - receiving messages
+    pthread_t listeningThread;
     if (pthread_create(&listeningThread, NULL, listen, (void *) listeningThreadData))
     {
         MPI_Finalize();
@@ -176,9 +196,10 @@ int main(int argc, char **argv)
     cout<<"Listening thread created - rank: "<<rank<<"\n";
     
     //initializatin completed, starting main logic
-    visit(&run, boats, ponyQueue, boatQueue, &rank, &size, &lamportClock);
+    visit(visitThreadData);
 
     MPI_Finalize();
     delete[] boats;
+    delete visitThreadData;
     delete listeningThreadData;
 }
