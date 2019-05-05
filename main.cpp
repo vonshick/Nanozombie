@@ -40,6 +40,8 @@ struct ListeningThreadData
 
 struct Packet
 {
+    Packet() {}
+    Packet(int msgT, int cap, bool onTrip, int captId) : msgType(msgT), capacity(cap), boatOnTrip(onTrip), captainId(captId) { }
     int msgType; 
     int capacity;       
     bool boatOnTrip;   //true - on trip, false - boat in port
@@ -82,16 +84,15 @@ void visit(bool *run, Packet *boats, queue<int> *ponyQueue, queue<int> *boatQueu
     {
         cout<<"Tourist "<<(*rank)<<" is registered!\n";
 
-        int wait_milisec = (rand() % (VISITOR_MAX_WAIT-VISITOR_MIN_WAIT)*1000) + VISITOR_MIN_WAIT*1000;
-        usleep(wait_milisec*1000);
+        int waitMilisec = (rand() % (VISITOR_MAX_WAIT-VISITOR_MIN_WAIT)*1000) + VISITOR_MIN_WAIT*1000;
+        usleep(waitMilisec*1000);
 
-        Packet *wanna_ponny = new Packet;
-        (*wanna_ponny).msgType = WANNA_PONNY;
+        Packet *wannaPonny = new Packet(WANNA_PONNY, 0, 0, 0);
 
         for(int i = 0; i < (*size); i++)
         {
             if(i != *(rank)){
-                MPI_Send( wanna_ponny, sizeof(Packet), MPI_BYTE, i, 0, MPI_COMM_WORLD); //send message about pony suit request 
+                MPI_Send( wannaPonny, sizeof(Packet), MPI_BYTE, i, 0, MPI_COMM_WORLD); //send message about pony suit request 
             }
         }    
 
@@ -104,7 +105,9 @@ void visit(bool *run, Packet *boats, queue<int> *ponyQueue, queue<int> *boatQueu
         //todo
         //serve getting pony suit
         cout<<"Tourist "<<(*rank)<<" got pony suit!\n";
-
+        delete wannaPonny;
+        
+        Packet *wannaBoat = new Packet;
     }
 }
 
