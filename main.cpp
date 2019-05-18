@@ -9,11 +9,11 @@
 #define IDLE -1
 #define INITIALIZATION 0
 #define WANNA_PONY 10
-#define WANNA_PONY_RESPONSE 11     //response to 10
-//#define TOOK_PONY_MSG 12           //took pony
-#define WANNA_BOAT 20
+#define WANNA_PONY_RESPONSE 11      //response to 10       
+#define WANNA_BOAT 20               //has pony, waiting for boat
 #define WANNA_BOAT_RESPONSE 21      //response to 20
-// #define TOOK_BOAT_MSG 22            //took place on boat
+#define HAS_BOAT_SLOT 22            //has place on boat
+#define ON_TRIP 30
 #define BOAT_DEPART 100             //boat departed for trip
 #define BOAT_RETURN 101             //boat returned from trip
 
@@ -24,15 +24,24 @@ const int VISITOR_MIN_WAIT = 2;     //seconds
 
 pthread_cond_t ponySuitCond;
 pthread_mutex_t ponySuitMutex;
+pthread_cond_t boatResponseCond;
+pthread_mutex_t boatResponseMutex;
 
 struct Packet
 {
     Packet() {}
-    Packet(int msgT, int cap, bool onTrip, int captId, int lampCl) : msgType(msgT), capacity(cap), boatOnTrip(onTrip), captainId(captId), lamportClock(lampCl) { }
-    int msgType; 
+    Packet(int msgT, int cap, bool onTrip, int captId, int lampCl) : capacity(cap), boatOnTrip(onTrip), captainId(captId), lamportClock(lampCl) { }
     int capacity;       
     bool boatOnTrip;   //true - on trip, false - boat in port
     int captainId; //process being captain on current trip
+    int lamportClock;
+};
+
+struct BoatSlotRequest
+{
+    BoatSlotRequest(int idArg, int capacityArg, int lamportClockArg) :  id(idArg), capacity(capacityArg), lamportClock(lamportClockArg) {}
+    int id;
+    int capacity;
     int lamportClock;
 };
 
@@ -41,13 +50,13 @@ struct Data
     bool run; 
     int condition;
     int recentRequestClock;
-    Packet boats;
+    // Packet boats;    not needed now, idk what is it ~ Piter
     int numberOfPonies;
     int numberOfBoats;
     int maxBoatCapacity;
     int maxVisitorWeight;
     queue<int> ponyQueue;
-    queue<int> boatQueue; 
+    queue<*BoatSlotRequest> boatQueue; 
     int rank; 
     int size; 
     int lamportClock;
@@ -73,28 +82,43 @@ void *listen(void *voidData)
     {
         MPI_Recv(buffer, sizeof(Packet), MPI_BYTE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status); 
         data->lamportClock = max(data->lamportClock, buffer->lamportClock)+1;
-        cout<<data->rank<<": lamport clock: "<<data->lamportClock<<"\n";
+        cout<<data->rank<<": my lamport clock: "<<data->lamportClock<<"\n";
         cout<<data->rank<<": incoming lamport clock: "<<buffer->lamportClock<<"\n";
 
-        switch(buffer->msgType){ // check what kind of message came and call proper event
+        switch(status.MPI_TAG){ // check what kind of message came and call proper event
             case WANNA_PONY:
                 cout<< data->rank <<": "<<"Tourist "<< status.MPI_SOURCE <<" want a pony suit!\n";
-                if(data->condition != WANNA_PONY || buffer->lamportClock < data->recentRequestClock){ // if thread doesn't want a pony suit or it requested for that later than thread sending package
-                    data->lamportClock += 1;
-                    response->lamportClock = data->lamportClock;                  
-                    response->msgType = WANNA_PONY_RESPONSE;
-                    MPI_Send( response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, 0, MPI_COMM_WORLD); // send message about pony suit request 
-                    cout<<data->rank<<": permission sent to: "<<status.MPI_SOURCE<<"\n";
-                } else {
-                    cout<<data->rank<<": added to pony queue: "<<status.MPI_SOURCE<<"\n";
+                if (data->condition == WANNA_BOAT){
+                    // cout<<data->rank<<": added to pony queue: "<<status.MPI_SOURCE<<"\n";
                     (data->ponyQueue).push(status.MPI_SOURCE);
+                } else if(data->condition == WANNA_PONY && (buffer->lamportClock > data->recentRequestClock || (buffer->lamportClock == data->recentRequestClock && status.MPI_SOURCE > data->rank))){
+                    // cout<<data->rank<<": added to pony queue: "<<status.MPI_SOURCE<<"\n";
+                    (data->ponyQueue).push(status.MPI_SOURCE);   
+                } else {                
+                    MPI_Send( response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, WANNA_PONY_RESPONSE, MPI_COMM_WORLD); // send message about pony suit request 
+                    printf("[%d] -> [%d]: sent PONY permission", data->rank, status.MPI_SOURCE);                          
                 }
                 break;
             case WANNA_PONY_RESPONSE:
-                cout<<data->rank<<": got permission to take pony suit from: "<<status.MPI_SOURCE<<"\n";
-                pthread_cond_signal(&ponySuitCond); //that's only for now - to test pthread_cond_signal
+            //TODO
+            //ignore messages after receiving enough permissions
+                printf("[%d]: received PONY permission from [%d]", data->rank, status.MPI_SOURCE);                          
+                pthread_cond_signal(&ponySuitCond);
+                break;
+            case WANNA_BOAT:
+            //TODO: response
+                break;
+            case WANNA_BOAT_RESPONSE:
+                printf("[%d]: received BOAT response from [%d]", data->rank, status.MPI_SOURCE);
+                BoatSlotRequest *boatSlotRequest = new BoatSlotRequest(status.MPI_SOURCE, buffer->capacity, buffer->lamportClock);
+                //todo: remember to delete above!
+                (data->boatQueue).push(boatSlotRequest);
+                if((data->boatQueue).size() == data->size - 1) {    //if all responses received
+                    pthread_cond_signal(&boatResponseCond);
+                }
                 break;
             default:
+                printf("[%d]: WRONG MPI_TAG (%d) FROM [%d]", data->rank, status.MPI_TAG, status.MPI_SOURCE);     
                 break; 
         }
     }
@@ -109,48 +133,73 @@ void *listen(void *voidData)
 void visit(Data *data)
 {   
     cout<<"Tourist "<< data->rank <<" is registered!\n";
+    Packet *message;
 
     while(data->run)
     {
         int waitMilisec = (rand() % (VISITOR_MAX_WAIT-VISITOR_MIN_WAIT)*1000) + VISITOR_MIN_WAIT*1000;
         usleep(waitMilisec*1000);
 
-        data->lamportClock += 1; // increment lamportClock before sending message
-        cout<<data->rank<<": lamport clock: "<<data->lamportClock<<"\n";
+        data->lamportClock += 1; // increment lamportClock before sending pony request
         data->recentRequestClock = data->lamportClock;
         data->condition = WANNA_PONY;
-        // (data->ponyQueue).push(data->rank); // push yourself to pony suit queue 
-        Packet *message = new Packet(WANNA_PONY, 0, 0, 0, data->lamportClock); // and send it in packet 
+        message = new Packet(WANNA_PONY, 0, 0, 0, data->lamportClock); // send wanna pony request in packet 
         for(int i = 0; i < data->size; i++)
         {
             if(i != data->rank){
-                MPI_Send( message, sizeof(Packet), MPI_BYTE, i, 0, MPI_COMM_WORLD); //send message about pony suit request 
+                MPI_Send( message, sizeof(Packet), MPI_BYTE, i, WANNA_PONY, MPI_COMM_WORLD); //send message about pony suit request 
+                printf("[%d] -> [%d]: sent PONY request  (lamport: %d)", data->rank, i, message->lamportClock);          
             }
         }    
 
         for(int i = 0; i < data->size - data->numberOfPonies; i++ ){ //if we got (numberOfTourists - numberOfPonies) answers that suit is free we can be sure that's true and take it
             pthread_mutex_lock(&ponySuitMutex);
             pthread_cond_wait(&ponySuitCond, &ponySuitMutex); //wait for signal from listening thread 
-            cout<<"Tourist "<<data->rank<<" is one step closer to take pony suit\n";
             pthread_mutex_unlock(&ponySuitMutex);
         }
 
-        cout<<"Tourist "<< data->rank <<" got pony suit!\n";
-        data->condition = IDLE;
-        data->lamportClock += 1;
-        message->msgType = WANNA_PONY_RESPONSE;   
+        data->condition = WANNA_BOAT;
+        printf("[%d]: got PONY suit!", data->rank);    
+
+        //TODO
+        //get slot on boat  
+        data->lamportClock += 1; // increment lamportClock before sending pony request
+        data->recentRequestClock = data->lamportClock;
+        data->condition = WANNA_BOAT;
         message->lamportClock = data->lamportClock;
+        // send wanna boat request
+        for(int i = 0; i < data->size; i++)
+        {
+            if(i != data->rank){
+                MPI_Send( message, sizeof(Packet), MPI_BYTE, i, WANNA_BOAT, MPI_COMM_WORLD); //send message about pony suit request 
+                printf("[%d] -> [%d]: sent BOAT request  (lamport: %d)", data->rank, i, message->lamportClock);          
+            }
+        }
+        //wait for all answers
+        pthread_mutex_lock(&boatResponseMutex);
+        pthread_cond_wait(&boatResponseCond, &boatResponseMutex); //wait for signal from listening thread 
+        pthread_mutex_unlock(&boatResponseMutex);
+
+        //boarding
+        //use data->boatQueue
+
+        //trip
+
+        //free boat slot
+
+        //free your pony suit - send permissions
         int ponyQueueSize = (data->ponyQueue).size();
         for (int i = 0; i < ponyQueueSize; i++){ // send message to all tourists waiting for a pony suit
-            MPI_Send( message, sizeof(Packet), MPI_BYTE, (data->ponyQueue).front(), 0, MPI_COMM_WORLD);
+            MPI_Send( message, sizeof(Packet), MPI_BYTE, (data->ponyQueue).front(), WANNA_PONY_RESPONSE, MPI_COMM_WORLD);
             (data->ponyQueue).pop();
-        } 
+            printf("[%d] -> [%d]: sent PONY permission", data->rank, i);
+        }
 
+        data->condition = IDLE;
         clearQueue(data->ponyQueue);
         
-        delete message;
-        Packet *wannaBoat = new Packet;
     }
+    delete message;
 }
 
 int main(int argc, char **argv)
@@ -172,12 +221,15 @@ int main(int argc, char **argv)
 
     pthread_cond_init(&ponySuitCond, NULL);
     pthread_mutex_init(&ponySuitMutex, NULL); 
+    pthread_cond_init(&boatResponseCond, NULL);
+    pthread_mutex_init(&boatResponseMutex, NULL);
 
     queue<int> ponyQueue;  //queue for pony, storing process id
-    queue<int> boatQueue;  //queue for boat
+    queue<*BoatSlotRequest> boatQueue;  //queue for boat
 
     Data *data = new Data;
     data->run = run;
+    data->condition = IDLE;    
     data->lamportClock = lamportClock;
     data->recentRequestClock = recentRequestClock;
     data->rank = rank; 
@@ -194,7 +246,6 @@ int main(int argc, char **argv)
     Packet *boats = new Packet[data->numberOfBoats]; //capacity of each boat 
     if (rank == 0)
     {
-        data->lamportClock = 1;
         for(int i = 0; i < data->numberOfBoats; i++)
         {
             boats[i].capacity = (rand() % data->maxBoatCapacity)  + 1;
@@ -208,7 +259,6 @@ int main(int argc, char **argv)
     else
     {
         MPI_Recv(boats, data->numberOfBoats * sizeof(Packet), MPI_BYTE, 0, INITIALIZATION, MPI_COMM_WORLD, MPI_STATUS_IGNORE); //wait for boats capacity
-        data->lamportClock = 2;
     }
 
     //create listening thread - receiving messages
