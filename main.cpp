@@ -27,7 +27,7 @@ pthread_mutex_t ponySuitMutex;
 struct Packet
 {
     Packet() {}
-    Packet(int msgT, int cap, bool onTrip, int captId) : msgType(msgT), capacity(cap), boatOnTrip(onTrip), captainId(captId) { }
+    Packet(int msgT, int cap, bool onTrip, int captId, int lampCl) : msgType(msgT), capacity(cap), boatOnTrip(onTrip), captainId(captId), lamportClock(lampCl) { }
     int msgType; 
     int capacity;       
     bool boatOnTrip;   //true - on trip, false - boat in port
@@ -38,6 +38,7 @@ struct Packet
 struct Data
 {
     bool *run; 
+    int *condition;
     Packet *boats;
     int numberOfPonies;
     int numberOfBoats;
@@ -57,7 +58,7 @@ void *listen(void *voidData)
     pthread_detach(pthread_self());
     Data *data = (Data *) voidData;
     Packet *buffer = new Packet;
-    Packet *response = new Packet(-1, 0, 0, 0);
+    Packet *response = new Packet(-1, 0, 0, 0, 0);
     MPI_Status status;
     int *lamportClock = data->lamportClock; 
     
@@ -67,6 +68,7 @@ void *listen(void *voidData)
         //check what kind of message came and call proper event
         switch(buffer->msgType){
             case WANNA_PONY:
+
                 // if(buffer->lamportClock < *(lamportClock)){
                     cout<<"Tourist "<< status.MPI_SOURCE <<" want a pony suit!\n";
                     // response->msgType = WANNA_PONY_RESPONSE
@@ -90,40 +92,36 @@ void *listen(void *voidData)
     pthread_exit(NULL);        
 }
 
+
 //main thread function, visitor logic
 void visit(Data *data)
 {   
+    cout<<"Tourist "<<*(data->rank)<<" is registered!\n";
 
-    int *size = data->size;
-    int *rank = data->rank;
-    bool *run = data->run;
-    cout<<"Tourist "<<(*rank)<<" is registered!\n";
-
-    while(*run)
+    while(*(data->run))
     {
         int waitMilisec = (rand() % (VISITOR_MAX_WAIT-VISITOR_MIN_WAIT)*1000) + VISITOR_MIN_WAIT*1000;
         usleep(waitMilisec*1000);
 
-        Packet *wannaPony = new Packet(WANNA_PONY, 0, 0, 0);
         *(data->lamportClock) += 1; // increment lamportClock before sending message
-        wannaPony->lamportClock =  *(data->lamportClock); // and send it in packet 
-
-        for(int i = 0; i < (*size); i++)
+        *(data->condition) = WANNA_PONY;
+        Packet *wannaPony = new Packet(WANNA_PONY, 0, 0, 0, *(data->lamportClock)); // and send it in packet 
+        for(int i = 0; i < *(data->size); i++)
         {
-            if(i != *(rank)){
+            if(i != *(data->rank)){
                 MPI_Send( wannaPony, sizeof(Packet), MPI_BYTE, i, 0, MPI_COMM_WORLD); //send message about pony suit request 
             }
         }    
 
-        for(int i = 0; i < (*size) - data->numberOfPonies; i++ ){ //if we got (numberOfTourists - numberOfPonies) answers that suit is free we can be sure that's true and take it
+        for(int i = 0; i < *(data->size) - data->numberOfPonies; i++ ){ //if we got (numberOfTourists - numberOfPonies) answers that suit is free we can be sure that's true and take it
             pthread_mutex_lock(&ponySuitMutex);
             pthread_cond_wait(&ponySuitCond, &ponySuitMutex); //wait for signal from listening thread 
-            cout<<"Tourist "<<(*rank)<<" got one permission to take pony suit\n";
+            cout<<"Tourist "<<*(data->rank)<<" got one permission to take pony suit\n";
             pthread_mutex_unlock(&ponySuitMutex);
         }
         //todo
         //serve getting pony suit
-        cout<<"Tourist "<<(*rank)<<" got pony suit!\n";
+        cout<<"Tourist "<<*(data->rank)<<" got pony suit!\n";
         delete wannaPony;
         
         Packet *wannaBoat = new Packet;
