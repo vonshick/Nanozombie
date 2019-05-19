@@ -29,6 +29,7 @@ pthread_mutex_t boatResponseMutex;
 pthread_mutex_t lamportMutex;
 pthread_mutex_t permissionsMutex;
 pthread_mutex_t currentBoatMutex;
+pthread_mutex_t permitsMutex;
 
 
 struct Packet
@@ -47,6 +48,7 @@ struct Boat
     int id;
     int capacity; 
     int capacityLeft;
+    queue<int> passengers; 
 };
 
 struct BoatSlotRequest
@@ -88,6 +90,10 @@ void clearQueue( queue<int> &q )
 bool onBoardPermission(Data* data){
     int minRemainingPlace = data->currentBoat.capacityLeft-(data->size - data->onBoardPermitsNumber)*data->maxVisitorWeight; 
     return (minRemainingPlace > data->visitorWeight);
+}
+
+bool noPlaceOnBoard(Data* data){
+    return ((data->currentBoat.capacityLeft < data->visitorWeight) && !onBoardPermission(data) && data->size == data->onBoardPermitsNumber);
 }
 
 //function for listening thread - receiving messages
@@ -148,18 +154,26 @@ void *listen(void *voidData)
                 break;
             case WANNA_BOAT_RESPONSE:
                 {
+                    //TODO
+                    //serve the case when got responses from everyone and there's
                     printf("[%d]: received BOAT response from [%d]\n", data->rank, status.MPI_SOURCE);
+                    pthread_mutex_lock(&permitsMutex);                                      
+                    data->onBoardPermitsNumber++;
+                    pthread_mutex_unlock(&permitsMutex);                                      
                     pthread_mutex_lock(&currentBoatMutex);                                      
-                    if(onBoardPermission){         
-                        pthread_cond_signal(&boatResponseCond); //take boat
-                        
-                    }
+                    if(onBoardPermission(data)){         
+                        pthread_cond_signal(&boatResponseCond); //take boat      
+                    } else if (noPlaceOnBoard(data)){
+                        //make last of passengers the captain
+                        //and start the trip
+                    } 
                     pthread_mutex_unlock(&currentBoatMutex);            
                 }
                 break;
             case HAS_BOAT_SLOT:
                 {
-                    pthread_mutex_lock(&currentBoatMutex);            
+                    pthread_mutex_lock(&currentBoatMutex);   
+                    data->currentBoat.passengers.push(status.MPI_SOURCE); // add tourist who sent message to passengers of certain boat         
                     data->currentBoat.capacityLeft -= buffer->capacityTaken;
                     pthread_mutex_unlock(&currentBoatMutex);          
                 }
@@ -170,7 +184,6 @@ void *listen(void *voidData)
                     data->freeBoats.pop();  
                     data->currentBoat = data->freeBoats.front();
                     pthread_mutex_unlock(&currentBoatMutex);                                      
-
                 }
                 break;
             default:
@@ -225,8 +238,6 @@ void visit(Data *data)
 
         printf("[%d]: got PONY suit!\n", data->rank);    
 
-        //TODO
-        //get slot on boat  
         prepareToRequest(data, message, WANNA_BOAT);
         // send wanna boat request
         for(int i = 0; i < data->size; i++)
@@ -241,6 +252,10 @@ void visit(Data *data)
         pthread_cond_wait(&boatResponseCond, &boatResponseMutex); //wait for signal from listening thread 
         pthread_mutex_unlock(&boatResponseMutex);
 
+        pthread_mutex_lock(&permitsMutex);                                      
+        data->onBoardPermitsNumber = 0;
+        pthread_mutex_unlock(&permitsMutex);                                      
+
         message->capacityTaken = data->visitorWeight; //let other tourists know how much place you have taken on the current boat
         for(int i = 0; i < data->size; i++)
         {
@@ -249,6 +264,7 @@ void visit(Data *data)
                 printf("[%d] -> [%d]: informed that HAS_BOAT_SLOT\n", data->rank, i);          
             }
         }
+
         //boarding
         //use data->boatQueue
 
@@ -305,7 +321,7 @@ int main(int argc, char **argv)
     //data, variables
 
     bool run = true;
-    int lamportClock = 0, recentRequestClock = 0, rank, size;
+    int rank, size;
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -318,8 +334,9 @@ int main(int argc, char **argv)
     Data *data = new Data;
     data->run = run;
     data->condition = IDLE;    
-    data->lamportClock = lamportClock;
-    data->recentRequestClock = recentRequestClock;
+    data->lamportClock = 0;
+    data->recentRequestClock = 0;
+    data->onBoardPermitsNumber = 0;
     data->rank = rank; 
     data->size = size;
     data->numberOfPonies = atoi(argv[1]);
