@@ -26,11 +26,12 @@ pthread_cond_t ponySuitCond;
 pthread_mutex_t ponySuitMutex;
 pthread_cond_t boatResponseCond;
 pthread_mutex_t boatResponseMutex;
+pthread_mutex_t lamportMutex;
 
 struct Packet
 {
     Packet() {}
-    Packet(int msgT, int cap, bool onTrip, int captId, int lampCl) : capacity(cap), boatOnTrip(onTrip), captainId(captId), lamportClock(lampCl) { }
+    Packet(int cap, bool onTrip, int captId, int lampCl) : capacity(cap), boatOnTrip(onTrip), captainId(captId), lamportClock(lampCl) { }
     int capacity;       
     bool boatOnTrip;   //true - on trip, false - boat in port
     int captainId; //process being captain on current trip
@@ -74,9 +75,8 @@ void *listen(void *voidData)
     pthread_detach(pthread_self());
     Data *data = (Data *) voidData;
     Packet *buffer = new Packet;
-    Packet *response = new Packet(0, 0, 0, 0, 0);
+    Packet *response = new Packet;
     MPI_Status status;
-    // int *lamportClock = &(data->lamportClock); 
     
     while(data->run)
     {
@@ -97,7 +97,7 @@ void *listen(void *voidData)
                         (data->ponyQueue).push(status.MPI_SOURCE);   
                     } else {                
                         MPI_Send( response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, WANNA_PONY_RESPONSE, MPI_COMM_WORLD); // send message about pony suit request 
-                        printf("[%d] -> [%d]: sent PONY permission", data->rank, status.MPI_SOURCE);                          
+                        printf("[%d] -> [%d]: sent PONY permission\n", data->rank, status.MPI_SOURCE);                          
                     }
                 }
                 break;
@@ -105,7 +105,7 @@ void *listen(void *voidData)
             //TODO
             //ignore messages after receiving enough permissions
                 {
-                    printf("[%d]: received PONY permission from [%d]", data->rank, status.MPI_SOURCE);                          
+                    printf("[%d]: received PONY permission from [%d]\n", data->rank, status.MPI_SOURCE);                          
                     pthread_cond_signal(&ponySuitCond);
                 }
                 break;
@@ -114,7 +114,7 @@ void *listen(void *voidData)
                 break;
             case WANNA_BOAT_RESPONSE:
                 {
-                    printf("[%d]: received BOAT response from [%d]", data->rank, status.MPI_SOURCE);
+                    printf("[%d]: received BOAT response from [%d]\n", data->rank, status.MPI_SOURCE);
                     BoatSlotRequest *boatSlotRequest = new BoatSlotRequest(status.MPI_SOURCE, buffer->capacity, buffer->lamportClock);
                     //todo: remember to delete above!
                     (data->boatQueue).push(boatSlotRequest);
@@ -124,7 +124,7 @@ void *listen(void *voidData)
                 }
                 break;
             default:
-                printf("[%d]: WRONG MPI_TAG (%d) FROM [%d]", data->rank, status.MPI_TAG, status.MPI_SOURCE);     
+                printf("[%d]: WRONG MPI_TAG (%d) FROM [%d]\n", data->rank, status.MPI_TAG, status.MPI_SOURCE);     
                 break; 
         }
     }
@@ -134,27 +134,32 @@ void *listen(void *voidData)
     pthread_exit(NULL);        
 }
 
+void prepareToRequest(Data* data, Packet* message, int condition){
+    data->condition = condition;
+    pthread_mutex_lock(&lamportMutex);
+    data->lamportClock += 1; // increment lamportClock before sending pony request
+    data->recentRequestClock = data->lamportClock;
+    message->lamportClock = data->lamportClock; // send wanna pony request in packet 
+    pthread_mutex_unlock(&lamportMutex);
+}
 
 //main thread function, visitor logic
 void visit(Data *data)
 {   
     cout<<"Tourist "<< data->rank <<" is registered!\n";
-    Packet *message;
+    Packet *message = new Packet;
 
     while(data->run)
     {
         int waitMilisec = (rand() % (VISITOR_MAX_WAIT-VISITOR_MIN_WAIT)*1000) + VISITOR_MIN_WAIT*1000;
         usleep(waitMilisec*1000);
 
-        data->lamportClock += 1; // increment lamportClock before sending pony request
-        data->recentRequestClock = data->lamportClock;
-        data->condition = WANNA_PONY;
-        message = new Packet(WANNA_PONY, 0, 0, 0, data->lamportClock); // send wanna pony request in packet 
+        prepareToRequest(data, message, WANNA_PONY);
         for(int i = 0; i < data->size; i++)
         {
             if(i != data->rank){
-                MPI_Send( message, sizeof(Packet), MPI_BYTE, i, WANNA_PONY, MPI_COMM_WORLD); //send message about pony suit request 
-                printf("[%d] -> [%d]: sent PONY request  (lamport: %d)", data->rank, i, message->lamportClock);          
+                MPI_Send(message, sizeof(Packet), MPI_BYTE, i, WANNA_PONY, MPI_COMM_WORLD); //send message about pony suit request 
+                printf("[%d] -> [%d]: sent PONY request  (lamport: %d)\n", data->rank, i, message->lamportClock);          
             }
         }    
 
@@ -164,21 +169,17 @@ void visit(Data *data)
             pthread_mutex_unlock(&ponySuitMutex);
         }
 
-        data->condition = WANNA_BOAT;
-        printf("[%d]: got PONY suit!", data->rank);    
+        printf("[%d]: got PONY suit!\n", data->rank);    
 
         //TODO
         //get slot on boat  
-        data->lamportClock += 1; // increment lamportClock before sending pony request
-        data->recentRequestClock = data->lamportClock;
-        data->condition = WANNA_BOAT;
-        message->lamportClock = data->lamportClock;
+        prepareToRequest(data, message, WANNA_BOAT);
         // send wanna boat request
         for(int i = 0; i < data->size; i++)
         {
             if(i != data->rank){
                 MPI_Send( message, sizeof(Packet), MPI_BYTE, i, WANNA_BOAT, MPI_COMM_WORLD); //send message about pony suit request 
-                printf("[%d] -> [%d]: sent BOAT request  (lamport: %d)", data->rank, i, message->lamportClock);          
+                printf("[%d] -> [%d]: sent BOAT request  (lamport: %d)\n", data->rank, i, message->lamportClock);          
             }
         }
         //wait for all answers
@@ -198,7 +199,7 @@ void visit(Data *data)
         for (int i = 0; i < ponyQueueSize; i++){ // send message to all tourists waiting for a pony suit
             MPI_Send( message, sizeof(Packet), MPI_BYTE, (data->ponyQueue).front(), WANNA_PONY_RESPONSE, MPI_COMM_WORLD);
             (data->ponyQueue).pop();
-            printf("[%d] -> [%d]: sent PONY permission", data->rank, i);
+            printf("[%d] -> [%d]: sent PONY permission\n", data->rank, i);
         }
 
         data->condition = IDLE;
@@ -212,7 +213,7 @@ int main(int argc, char **argv)
 {
     if(argc != 5)
     {
-	    cout << "Specify 4 arguments: numberOfPonies, numberOfBoats, maxBoatCapacity, maxVisitorWeight";
+	    cout << "Specify 4 arguments: numberOfPonies, numberOfBoats, maxBoatCapacity, maxVisitorWeight\n";
 	    exit(0);
     }
 
