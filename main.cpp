@@ -27,6 +27,7 @@ pthread_mutex_t ponySuitMutex;
 pthread_cond_t boatResponseCond;
 pthread_mutex_t boatResponseMutex;
 pthread_mutex_t lamportMutex;
+pthread_mutex_t permissionsMutex;
 
 struct Packet
 {
@@ -51,6 +52,7 @@ struct Data
     bool run; 
     int condition;
     int recentRequestClock;
+    int necessaryPermissions;
     // Packet boats;    not needed now, idk what is it ~ Piter
     int numberOfPonies;
     int numberOfBoats;
@@ -102,11 +104,13 @@ void *listen(void *voidData)
                 }
                 break;
             case WANNA_PONY_RESPONSE:
-            //TODO
-            //ignore messages after receiving enough permissions
                 {
-                    printf("[%d]: received PONY permission from [%d]\n", data->rank, status.MPI_SOURCE);                          
-                    pthread_cond_signal(&ponySuitCond);
+                    pthread_mutex_lock(&permissionsMutex);            
+                    if(data->necessaryPermissions > 0){
+                        pthread_mutex_unlock(&permissionsMutex);            
+                        printf("[%d]: received PONY permission from [%d]\n", data->rank, status.MPI_SOURCE);                          
+                        pthread_cond_signal(&ponySuitCond);
+                    }
                 }
                 break;
             case WANNA_BOAT:
@@ -163,10 +167,14 @@ void visit(Data *data)
             }
         }    
 
-        for(int i = 0; i < data->size - data->numberOfPonies; i++ ){ //if we got (numberOfTourists - numberOfPonies) answers that suit is free we can be sure that's true and take it
+        data->necessaryPermissions = data->size - data->numberOfPonies; //if we got (numberOfTourists - numberOfPonies) answers that suit is free we can be sure that's true and take it
+        for(int i = 0; i < data->size - data->numberOfPonies; i++ ){ 
             pthread_mutex_lock(&ponySuitMutex);
             pthread_cond_wait(&ponySuitCond, &ponySuitMutex); //wait for signal from listening thread 
             pthread_mutex_unlock(&ponySuitMutex);
+            pthread_mutex_lock(&permissionsMutex);            
+            data->necessaryPermissions --;
+            pthread_mutex_unlock(&permissionsMutex);
         }
 
         printf("[%d]: got PONY suit!\n", data->rank);    
