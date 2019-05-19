@@ -56,7 +56,7 @@ struct Data
     int maxBoatCapacity;
     int maxVisitorWeight;
     queue<int> ponyQueue;
-    queue<*BoatSlotRequest> boatQueue; 
+    queue<BoatSlotRequest*> boatQueue; 
     int rank; 
     int size; 
     int lamportClock;
@@ -87,34 +87,40 @@ void *listen(void *voidData)
 
         switch(status.MPI_TAG){ // check what kind of message came and call proper event
             case WANNA_PONY:
-                cout<< data->rank <<": "<<"Tourist "<< status.MPI_SOURCE <<" want a pony suit!\n";
-                if (data->condition == WANNA_BOAT){
-                    // cout<<data->rank<<": added to pony queue: "<<status.MPI_SOURCE<<"\n";
-                    (data->ponyQueue).push(status.MPI_SOURCE);
-                } else if(data->condition == WANNA_PONY && (buffer->lamportClock > data->recentRequestClock || (buffer->lamportClock == data->recentRequestClock && status.MPI_SOURCE > data->rank))){
-                    // cout<<data->rank<<": added to pony queue: "<<status.MPI_SOURCE<<"\n";
-                    (data->ponyQueue).push(status.MPI_SOURCE);   
-                } else {                
-                    MPI_Send( response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, WANNA_PONY_RESPONSE, MPI_COMM_WORLD); // send message about pony suit request 
-                    printf("[%d] -> [%d]: sent PONY permission", data->rank, status.MPI_SOURCE);                          
+                {    
+                    cout<< data->rank <<": "<<"Tourist "<< status.MPI_SOURCE <<" want a pony suit!\n";
+                    if (data->condition == WANNA_BOAT){
+                        // cout<<data->rank<<": added to pony queue: "<<status.MPI_SOURCE<<"\n";
+                        (data->ponyQueue).push(status.MPI_SOURCE);
+                    } else if(data->condition == WANNA_PONY && (buffer->lamportClock > data->recentRequestClock || (buffer->lamportClock == data->recentRequestClock && status.MPI_SOURCE > data->rank))){
+                        // cout<<data->rank<<": added to pony queue: "<<status.MPI_SOURCE<<"\n";
+                        (data->ponyQueue).push(status.MPI_SOURCE);   
+                    } else {                
+                        MPI_Send( response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, WANNA_PONY_RESPONSE, MPI_COMM_WORLD); // send message about pony suit request 
+                        printf("[%d] -> [%d]: sent PONY permission", data->rank, status.MPI_SOURCE);                          
+                    }
                 }
                 break;
             case WANNA_PONY_RESPONSE:
             //TODO
             //ignore messages after receiving enough permissions
-                printf("[%d]: received PONY permission from [%d]", data->rank, status.MPI_SOURCE);                          
-                pthread_cond_signal(&ponySuitCond);
+                {
+                    printf("[%d]: received PONY permission from [%d]", data->rank, status.MPI_SOURCE);                          
+                    pthread_cond_signal(&ponySuitCond);
+                }
                 break;
             case WANNA_BOAT:
             //TODO: response
                 break;
             case WANNA_BOAT_RESPONSE:
-                printf("[%d]: received BOAT response from [%d]", data->rank, status.MPI_SOURCE);
-                BoatSlotRequest *boatSlotRequest = new BoatSlotRequest(status.MPI_SOURCE, buffer->capacity, buffer->lamportClock);
-                //todo: remember to delete above!
-                (data->boatQueue).push(boatSlotRequest);
-                if((data->boatQueue).size() == data->size - 1) {    //if all responses received
-                    pthread_cond_signal(&boatResponseCond);
+                {
+                    printf("[%d]: received BOAT response from [%d]", data->rank, status.MPI_SOURCE);
+                    BoatSlotRequest *boatSlotRequest = new BoatSlotRequest(status.MPI_SOURCE, buffer->capacity, buffer->lamportClock);
+                    //todo: remember to delete above!
+                    (data->boatQueue).push(boatSlotRequest);
+                    if((data->boatQueue).size() == data->size - 1) {    //if all responses received
+                        pthread_cond_signal(&boatResponseCond);
+                    }
                 }
                 break;
             default:
@@ -225,7 +231,7 @@ int main(int argc, char **argv)
     pthread_mutex_init(&boatResponseMutex, NULL);
 
     queue<int> ponyQueue;  //queue for pony, storing process id
-    queue<*BoatSlotRequest> boatQueue;  //queue for boat
+    queue<BoatSlotRequest*> boatQueue;  //queue for boat
 
     Data *data = new Data;
     data->run = run;
