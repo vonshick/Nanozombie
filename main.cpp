@@ -39,6 +39,13 @@ struct Packet
     int lamportClock;
 };
 
+struct Boat 
+{
+    int id;
+    int capacity; 
+    int capacityLeft;
+};
+
 struct BoatSlotRequest
 {
     BoatSlotRequest(int idArg, int capacityArg, int lamportClockArg) :  id(idArg), capacity(capacityArg), lamportClock(lamportClockArg) {}
@@ -59,7 +66,12 @@ struct Data
     int maxBoatCapacity;
     int maxVisitorWeight;
     queue<int> ponyQueue;
+    queue<int> placeOnBoardQueue;
+    Boat* freeBoats;
+    Boat* boatsOnTrip;
+    Boat currentBoat;
     queue<BoatSlotRequest*> boatQueue; 
+
     int rank; 
     int size; 
     int lamportClock;
@@ -114,7 +126,15 @@ void *listen(void *voidData)
                 }
                 break;
             case WANNA_BOAT:
-            //TODO: response
+                    cout<< data->rank <<": "<<"Tourist "<< status.MPI_SOURCE <<" want some place on a boat!\n";
+                    pthread_mutex_lock(&lamportMutex);            
+                    if(data->condition == WANNA_BOAT && (buffer->lamportClock > data->recentRequestClock || (buffer->lamportClock == data->recentRequestClock && status.MPI_SOURCE > data->rank))){
+                        pthread_mutex_unlock(&lamportMutex);         
+                        data->placeOnBoardQueue.push(status.MPI_SOURCE);                   
+                    } else {                
+                        MPI_Send(response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, WANNA_BOAT_RESPONSE, MPI_COMM_WORLD); // send message about boat permission 
+                        printf("[%d] -> [%d]: sent BOAT permission\n", data->rank, status.MPI_SOURCE);                          
+                    }
                 break;
             case WANNA_BOAT_RESPONSE:
                 {
@@ -217,6 +237,29 @@ void visit(Data *data)
     delete message;
 }
 
+Boat* createBoats(Data* data){
+    Boat *boats = new Boat[data->numberOfBoats]; //capacity of each boat 
+    if (data->rank == 0)
+    {
+        for(int i = 0; i < data->numberOfBoats; i++)
+        {
+            boats[i].capacity = (rand() % data->maxBoatCapacity)  + 1;
+            boats[i].capacityLeft = boats[i].capacity;
+            // boats[i].boatOnTrip = false;
+        }
+        for(int i = 1; i < data->size; i++)
+        {
+            MPI_Send(boats, data->numberOfBoats * sizeof(Boat), MPI_BYTE, i, INITIALIZATION, MPI_COMM_WORLD); //send array with boats capacity
+        }        
+    }
+    else
+    {
+        MPI_Recv(boats, data->numberOfBoats * sizeof(Boat), MPI_BYTE, 0, INITIALIZATION, MPI_COMM_WORLD, MPI_STATUS_IGNORE); //wait for boats capacity
+    }
+
+    return boats;
+}
+
 int main(int argc, char **argv)
 {
     if(argc != 5)
@@ -239,9 +282,6 @@ int main(int argc, char **argv)
     pthread_cond_init(&boatResponseCond, NULL);
     pthread_mutex_init(&boatResponseMutex, NULL);
 
-    queue<int> ponyQueue;  //queue for pony, storing process id
-    queue<BoatSlotRequest*> boatQueue;  //queue for boat
-
     Data *data = new Data;
     data->run = run;
     data->condition = IDLE;    
@@ -249,33 +289,15 @@ int main(int argc, char **argv)
     data->recentRequestClock = recentRequestClock;
     data->rank = rank; 
     data->size = size;
-    data->ponyQueue = ponyQueue;
-    data->boatQueue = boatQueue;
     data->numberOfPonies = atoi(argv[1]);
     data->numberOfBoats = atoi(argv[2]);
     data->maxBoatCapacity = atoi(argv[3]);
     data->maxVisitorWeight = atoi(argv[4]);
-
     srand(time(NULL));  
-
-    Packet *boats = new Packet[data->numberOfBoats]; //capacity of each boat 
-    if (rank == 0)
-    {
-        for(int i = 0; i < data->numberOfBoats; i++)
-        {
-            boats[i].capacity = (rand() % data->maxBoatCapacity)  + 1;
-            boats[i].boatOnTrip = false;
-        }
-        for(int i = 1; i < size; i++)
-        {
-            MPI_Send(boats, data->numberOfBoats * sizeof(Packet), MPI_BYTE, i, INITIALIZATION, MPI_COMM_WORLD); //send array with boats capacity
-        }        
-    }
-    else
-    {
-        MPI_Recv(boats, data->numberOfBoats * sizeof(Packet), MPI_BYTE, 0, INITIALIZATION, MPI_COMM_WORLD, MPI_STATUS_IGNORE); //wait for boats capacity
-    }
-
+    Boat* boats = createBoats(data);
+    data->freeBoats = boats;
+    data->currentBoat = boats[0];
+    
     //create listening thread - receiving messages
     pthread_t listeningThread;
     if (pthread_create(&listeningThread, NULL, listen, (void *) data))
