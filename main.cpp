@@ -89,11 +89,11 @@ void clearQueue( queue<int> &q )
 
 bool onBoardPermission(Data* data){
     int minRemainingPlace = data->currentBoat.capacityLeft-(data->size - data->onBoardPermitsNumber)*data->maxVisitorWeight; 
-    return (minRemainingPlace > data->visitorWeight);
+    return (minRemainingPlace >= data->visitorWeight);
 }
 
 bool noPlaceOnBoard(Data* data){
-    return ((data->currentBoat.capacityLeft < data->visitorWeight) && !onBoardPermission(data) && data->size == data->onBoardPermitsNumber);
+    return (data->currentBoat.capacityLeft < data->visitorWeight);
 }
 
 //function for listening thread - receiving messages
