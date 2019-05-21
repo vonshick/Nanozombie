@@ -464,7 +464,9 @@ void manageTheTrip(Data* data){
 void getOnBoat(Data *data, int boatId)
 {
     printf("[%d]: got on BOAT[%d]!\n", data->rank, boatId);
+    pthread_mutex_lock(&boardedBoatMutex);
     data->boardedBoat = boatId;
+    pthread_mutex_unlock(&boardedBoatMutex);
     pthread_mutex_lock(&conditionMutex);
     data->condition = ONBOARD;
     pthread_mutex_unlock(&conditionMutex);
@@ -530,7 +532,7 @@ void placeVisitorsInBoats(Data *data)
     for(int i = 0;i < boatRequestsNumber;i++) //runs until all visitors with lower lamport clock (higher priority) are placed on boats
     {
         BoatSlotRequest boatSlotRequest = *(data->boatRequestList[i]);
-
+        printf("[%d] %d element in queue: tourist %d lamport %d\n", data->rank, i, boatSlotRequest.id, boatSlotRequest.lamportClock);
         int visitorCapacity = boatSlotRequest.capacity;
         if(visitorCapacity <= capacityLeft)
         {
@@ -674,7 +676,7 @@ int main(int argc, char **argv)
     pthread_cond_init(&waitForEndOfTripCond, NULL);
     pthread_mutex_init(&waitForEndOfTripMutex, NULL); 
     pthread_mutex_init(&boatRequestListMutex, NULL); 
-    pthread_mutex_init(&boardedBoatCapacityMutex, NULL);
+    pthread_mutex_init(&boardedBoatCapacityMutex, NULL) ;
     pthread_mutex_init(&boardedBoatMutex, NULL); 
     pthread_mutex_init(&necessaryBoatAnswersMutex, NULL); 
 
