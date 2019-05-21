@@ -119,27 +119,29 @@ void *listen(void *voidData)
                 {    
                     cout<< data->rank <<": "<<"Tourist "<< status.MPI_SOURCE <<" want a PONY!\n";
                     pthread_mutex_lock(&conditionMutex);
-                    pthread_mutex_lock(&recentRequestClockMutex);
                     if (data->condition == WANNA_BOAT)
                     {
                         pthread_mutex_unlock(&conditionMutex);
-                        pthread_mutex_unlock(&recentRequestClockMutex);
                         // cout<<data->rank<<": added to pony queue: "<<status.MPI_SOURCE<<"\n";
                         (data->ponyQueue).push(status.MPI_SOURCE);
                     }
-                    else if(data->condition == WANNA_PONY && (buffer->lamportClock > data->recentRequestClock || (buffer->lamportClock == data->recentRequestClock && status.MPI_SOURCE > data->rank)))
-                    {
-                        pthread_mutex_unlock(&conditionMutex);
-                        pthread_mutex_unlock(&recentRequestClockMutex);
-                        // cout<<data->rank<<": added to pony queue: "<<status.MPI_SOURCE<<"\n";
-                        (data->ponyQueue).push(status.MPI_SOURCE);   
-                    }
                     else
-                    {                
-                        pthread_mutex_unlock(&conditionMutex);
-                        pthread_mutex_unlock(&recentRequestClockMutex);
-                        MPI_Send( response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, WANNA_PONY_RESPONSE, MPI_COMM_WORLD); // send message about pony suit request 
-                        printf("[%d] -> [%d]: sent PONY permission\n", data->rank, status.MPI_SOURCE);                          
+                    {
+                        pthread_mutex_lock(&recentRequestClockMutex);
+                        if(data->condition == WANNA_PONY && (buffer->lamportClock > data->recentRequestClock || (buffer->lamportClock == data->recentRequestClock && status.MPI_SOURCE > data->rank)))
+                        {
+                            pthread_mutex_unlock(&recentRequestClockMutex);
+                            pthread_mutex_unlock(&conditionMutex);
+                            // cout<<data->rank<<": added to pony queue: "<<status.MPI_SOURCE<<"\n";
+                            (data->ponyQueue).push(status.MPI_SOURCE);   
+                        }
+                        else
+                        {                
+                            pthread_mutex_unlock(&recentRequestClockMutex);
+                            pthread_mutex_unlock(&conditionMutex);
+                            MPI_Send( response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, WANNA_PONY_RESPONSE, MPI_COMM_WORLD); // send message about pony suit request 
+                            printf("[%d] -> [%d]: sent PONY permission\n", data->rank, status.MPI_SOURCE);                          
+                        }
                     }
                 }
                 break;
@@ -152,8 +154,10 @@ void *listen(void *voidData)
                         printf("[%d]: received PONY permission from [%d]\n", data->rank, status.MPI_SOURCE);                          
                         pthread_cond_signal(&ponySuitCond);
                     }
-                    pthread_mutex_unlock(&ponyPermissionsMutex);            
-
+                    else
+                    {
+                        pthread_mutex_unlock(&ponyPermissionsMutex);            
+                    }
                 }
                 break;
             case WANNA_BOAT:
@@ -450,8 +454,6 @@ int main(int argc, char **argv)
     pthread_mutex_init(&boatsMutex, NULL); 
     pthread_mutex_init(&conditionMutex, NULL);
     pthread_mutex_init(&recentRequestClockMutex, NULL); 
-    
-
 
     queue<int> ponyQueue;  //queue for pony, storing process id
     vector<BoatSlotRequest*> boatRequestList;  //queue for boat place requests
