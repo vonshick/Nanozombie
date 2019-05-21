@@ -48,6 +48,8 @@ pthread_cond_t waitForDepartureCond;
 pthread_mutex_t waitForDepartureMutex;
 pthread_cond_t waitForEndOfTripCond;
 pthread_mutex_t waitForEndOfTripMutex;
+pthread_mutex_t boatRequestListMutex;
+
 
 struct Packet
 {
@@ -206,6 +208,7 @@ void *listen(void *voidData)
                         BoatSlotRequest *boatSlotRequest = new BoatSlotRequest(status.MPI_SOURCE, buffer->capacity, buffer->lamportClock);
 
                         //todo: remember to delete above!
+                        // done in clearBoatRequestList()
 
                         (data->boatRequestList).push_back(boatSlotRequest);
                         if((data->boatRequestList).size() == data->necessaryBoatAnswers)
@@ -279,10 +282,14 @@ void *listen(void *voidData)
             case END_OF_TRIP:
                 {
                     printf("[%d]: received END_OF_TRIP from [%d]\n", data->rank, status.MPI_SOURCE);
+                    pthread_mutex_lock(&conditionMutex);
                     if(data->condition == ON_TRIP && buffer->id == data->boardedBoat)
                     {
+                        pthread_mutex_unlock(&conditionMutex);
                         pthread_cond_signal(&waitForEndOfTripCond);     //notify waiting visitor    
                     }
+                    pthread_mutex_unlock(&conditionMutex);
+
                     //TODO anything else?                 
                 }
                 break;
@@ -310,6 +317,15 @@ void prepareToRequest(Data *data, Packet *message, int newCondition)
     pthread_mutex_unlock(&recentRequestClockMutex);
     message->lamportClock = data->lamportClock; // send wanna pony request in packet 
     pthread_mutex_unlock(&lamportMutex);
+}
+
+void clearBoatRequestList(Data* data){
+    pthread_mutex_lock(&boatRequestListMutex);
+    for(int i = 0;i < (data->boatRequestList).size();i++){
+        data->boatRequestList[i];
+    }
+    data->boatRequestList.clear();
+    pthread_mutex_unlock(&boatRequestListMutex);
 }
 
 void findPony(Data *data, Packet *message)
@@ -365,8 +381,13 @@ void findFreeBoat(Data *data, int current)
     pthread_mutex_unlock(&waitForFreeBoatMutex);
 
     Packet *message = new Packet;
+    pthread_mutex_lock(&currentBoatMutex);
     message->id = data->currentBoat;
+    pthread_mutex_lock(&boatsMutex);
     message->capacity = data->boats[data->currentBoat];
+    pthread_mutex_unlock(&boatsMutex);
+    pthread_mutex_unlock(&currentBoatMutex);
+
     for(int i = 0; i < data->size ;i++)
     {
         if(i != data->rank)
@@ -431,11 +452,22 @@ void startTrip(Data *data, int departingBoatId, int capacity, int captainId)
 
 void placeVisitorsInBoats(Data *data)
 {
+    pthread_mutex_lock(&currentBoatMutex);
+    pthread_mutex_lock(&boatsMutex);
     int capacityLeft = data->boats[data->currentBoat];
+    pthread_mutex_unlock(&boatsMutex);    
+    pthread_mutex_unlock(&currentBoatMutex);
+
     int captainId = INT_MAX;
-    for(int i = 0;i < (data->boatRequestList).size();i++) //runs until all visitors with lower lamport clock (higher priority) are placed on boats
+
+    pthread_mutex_lock(&boatRequestListMutex);
+    int boatRequestsNumber =  (data->boatRequestList).size();
+    pthread_mutex_unlock(&boatRequestListMutex);
+
+    for(int i = 0;i < boatRequestsNumber;i++) //runs until all visitors with lower lamport clock (higher priority) are placed on boats
     {
         BoatSlotRequest boatSlotRequest = *(data->boatRequestList[i]);
+
         int visitorCapacity = boatSlotRequest.capacity;
         if(visitorCapacity <= capacityLeft)
         {
@@ -444,20 +476,30 @@ void placeVisitorsInBoats(Data *data)
         else
         {
             //wait for next boat: new value of data->currentBoat, message: BOAT_SELECT
+            pthread_mutex_lock(&currentBoatMutex);
             data->currentBoat = -2;
+            pthread_mutex_unlock(&currentBoatMutex);
             pthread_mutex_lock(&waitForFreeBoatMutex);
             pthread_cond_wait(&waitForFreeBoatCond, &waitForFreeBoatMutex); //wait for listening thread to receive BOAT_SELECT with next boat
             pthread_mutex_unlock(&waitForFreeBoatMutex);
+            pthread_mutex_lock(&currentBoatMutex);
+            pthread_mutex_lock(&boatsMutex);
             capacityLeft = data->boats[data->currentBoat];
+            pthread_mutex_unlock(&boatsMutex);
+            pthread_mutex_unlock(&currentBoatMutex);
         }
-        
     }
     //now visitor has the priority for place on boat
     if(data->visitorCapacity > capacityLeft)    //if no place for him, start trip and find nxet boat for boarding
     {
+        pthread_mutex_lock(&boatRequestListMutex);
+        captainId = (*data->boatRequestList[(data->boatRequestList).size()-1]).id; // last tourist who came into boat becomes a captain
+        pthread_mutex_unlock(&boatRequestListMutex);
+        printf("Tourist %d became a CAPTAIN!\n", captainId);              
         startTrip(data, data->currentBoat, data->boats[data->currentBoat], captainId);
         findFreeBoat(data, data->currentBoat);
     }
+    clearBoatRequestList(data);
     getOnBoat(data, data->currentBoat);     //get onboard and wait for departure
 }
 
@@ -482,9 +524,8 @@ void findPlaceOnBoat(Data *data,  Packet *message)
     //sort by lamport the list of candidates for boat
     sort((data->boatRequestList).begin(), (data->boatRequestList).end(), CompareBoatSlotRequest());
 
-
-    //TODO: make sure which boat is boarding?
-
+    //TODO: make sure which boat is boarding? 
+    //vonshick: rather unnecessary - we are aware of which one is boarding thanks to data->currentBoat and mutexes
 
     //find your boat by placing other visitors in boats with regard to lamport
     placeVisitorsInBoats(data);
@@ -543,7 +584,7 @@ int main(int argc, char **argv)
         cout << "All arguments must be positive integers\n";
 	    exit(0);
     }
-    if(atoi(argv[3]) >= atoi(argv[4]))  //make sure any boat has space for at least one visitor
+    if(atoi(argv[3]) <= atoi(argv[4]))  //make sure any boat has space for at least one visitor
     {
 	    cout << "maxBoatCapacity must be greater or equal to maxVisitorCapacity\n";
 	    exit(0);
@@ -569,6 +610,8 @@ int main(int argc, char **argv)
     pthread_mutex_init(&waitForDepartureMutex, NULL); 
     pthread_cond_init(&waitForEndOfTripCond, NULL);
     pthread_mutex_init(&waitForEndOfTripMutex, NULL); 
+    pthread_mutex_init(&boatRequestListMutex, NULL); 
+    
 
     queue<int> ponyQueue;  //queue for pony, storing process id
     vector<BoatSlotRequest*> boatRequestList;  //queue for boat place requests
