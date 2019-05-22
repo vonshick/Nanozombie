@@ -285,10 +285,11 @@ void *listen(void *voidData)
                 {
                     printf("[%d]: received BOAT_SELECT from [%d]\n", data->rank, status.MPI_SOURCE);
                     bool sendSignal = false;
+                    pthread_mutex_lock(&waitForFreeBoatMutex);
                     pthread_mutex_lock(&currentBoatMutex);
                     if(data->currentBoat == -2)
                     {
-                        sendSignal = true;  //not unlocking because I would have to lock again, and probably this will less efficient than setting one variable
+                        sendSignal = true;
                     }
                     data->currentBoat = buffer->boatId;    //set id of selected boat as current boarding boat
                     pthread_mutex_unlock(&currentBoatMutex);
@@ -297,11 +298,9 @@ void *listen(void *voidData)
                     pthread_mutex_unlock(&boatsMutex);
                     if(sendSignal)
                     {
-                        pthread_mutex_lock(&waitForFreeBoatMutex);  //solution for TODO in line 573: this should be somewhere higher probably
-
                         pthread_cond_signal(&waitForFreeBoatCond);     //notify waiting visitor    
-                        pthread_mutex_unlock(&waitForFreeBoatMutex);
                     }
+                    pthread_mutex_unlock(&waitForFreeBoatMutex);
                 }
                 break;
             case END_OF_TRIP:
@@ -564,20 +563,14 @@ void placeVisitorsInBoats(Data *data)
         else
         {
             //check if boat has changed in meantime:
+            pthread_mutex_lock(&waitForFreeBoatMutex);
             pthread_mutex_lock(&currentBoatMutex);            
             if(data->currentBoat == boardingBoat)
             {
                 data->currentBoat = -2;
                 pthread_mutex_unlock(&currentBoatMutex);
-
-                //TODO!!!
-                //signal from listening thread could be lost in this place (condition  data->currentBoat == -2 is met but wait has not been called yet)
-                //solution (probably): in listening thread place properly pthread_mutex_lock(&waitForFreeBoatMutex) (somewhere higher than now)
-
                 //wait for next boat: new value of data->currentBoat, message: BOAT_SELECT
-                pthread_mutex_lock(&waitForFreeBoatMutex);
                 pthread_cond_wait(&waitForFreeBoatCond, &waitForFreeBoatMutex); //wait for listening thread to receive BOAT_SELECT with next boat
-                pthread_mutex_unlock(&waitForFreeBoatMutex);
             }
             else
             {
@@ -589,6 +582,7 @@ void placeVisitorsInBoats(Data *data)
             pthread_mutex_lock(&boatsMutex);
             capacityLeft = data->boats[boardingBoat];
             pthread_mutex_unlock(&boatsMutex);
+            pthread_mutex_unlock(&waitForFreeBoatMutex);
         }
     }
     //now visitor has the priority for place on boat
