@@ -234,28 +234,6 @@ void *listen(void *voidData)
                     }
                 }
                 break;
-            // case BOAT_RETURN:
-            //     {
-            //         printf("[%d]: received BOAT_RETURN from [%d]\n", data->rank, status.MPI_SOURCE);
-            //         //notify passangers (and all?)
-                    
-            //         //mark a boat as free. If there had been no free boats for boarding - wake up waiting thread
-            //         pthread_mutex_lock(&currentBoatMutex);
-            //         if(data->currentBoat == -1)
-            //         {
-            //             data->currentBoat = buffer->boatId;    //set id of boat that returned as current boarding boat
-            //             pthread_mutex_unlock(&currentBoatMutex);
-            //             pthread_mutex_lock(&boatsMutex);
-            //             data->boats[buffer->boatId] = buffer->capacity;
-            //             pthread_mutex_unlock(&boatsMutex);
-            //             pthread_cond_signal(&waitForFreeBoatCond);  //notify waiting visitor             
-            //         }
-            //         else
-            //         {
-            //             pthread_mutex_unlock(&currentBoatMutex);                       
-            //         }
-            //     }
-            //     break;
             case BOAT_DEPART:
                 {
                     printf("[%d]: received BOAT_DEPART from [%d]\n", data->rank, status.MPI_SOURCE);
