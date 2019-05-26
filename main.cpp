@@ -18,7 +18,8 @@
 #define WANNA_BOAT_RESPONSE 21      //response to 20, capacity > 0 means process wants a place on the boat (capacity == 0 - don't want a place)
 
 //TODO: find and do todos :)
-
+//TODO: conds and signals look ok, but check if critical section covered by cond side mutex need even more expansion (like in line 643, last "to do") 
+//TODO: analyze access to shared data between threads
 
 //TODO: answers handling when on_board, on_trip?
 #define ONBOARD 30
@@ -171,18 +172,22 @@ void *listen(void *voidData)
                 break;
             case WANNA_PONY_RESPONSE:
                 {
-                    pthread_mutex_lock(&ponyPermissionsMutex);    
-                    if(data->necessaryPonyPermissions > 0)
+                    data->necessaryPonyPermissions--;
+                    if(data->necessaryPonyPermissions == 0)
                     {
-                        pthread_mutex_unlock(&ponyPermissionsMutex);            
-                        printf("[%d]: received PONY permission from [%d]\n", data->rank, status.MPI_SOURCE);    
+                        printf("[%d]: received last required PONY permission from [%d]\n", data->rank, status.MPI_SOURCE);
+                        //TODO: delegate it to other thread??
                         pthread_mutex_lock(&ponySuitMutex);
                         pthread_cond_signal(&ponySuitCond);
                         pthread_mutex_unlock(&ponySuitMutex);                                              
                     }
+                    else if(data->necessaryPonyPermissions > 0)
+                    {
+                        printf("[%d]: received PONY permission from [%d]. Need %d more.\n", data->rank, status.MPI_SOURCE, data->necessaryPonyPermissions);
+                    }
                     else
                     {
-                        pthread_mutex_unlock(&ponyPermissionsMutex);            
+                        printf("[%d]: received unnecessary PONY permission from [%d], skipping.\n", data->rank, status.MPI_SOURCE);
                     }
                 }
                 break;
@@ -373,6 +378,8 @@ void clearBoatRequestList(Data* data){
 void findPony(Data *data, Packet *message)
 {
     prepareToRequest(data, message, WANNA_PONY);
+    data->necessaryPonyPermissions = data->size - data->numberOfPonies; //if we got (numberOfTourists - numberOfPonies) answers that suit is free we can be sure that's true and take it
+    pthread_mutex_lock(&ponySuitMutex);
     //send wanna pony request
     for(int i = 0; i < data->size; i++)
     {
@@ -382,20 +389,9 @@ void findPony(Data *data, Packet *message)
             printf("[%d] -> [%d]: sent PONY request  (lamport: %d)\n", data->rank, i, message->lamportClock);          
         }
     }    
-    //wait for enough permissions
-    pthread_mutex_lock(&ponyPermissionsMutex);            
-    data->necessaryPonyPermissions = data->size - data->numberOfPonies; //if we got (numberOfTourists - numberOfPonies) answers that suit is free we can be sure that's true and take it
-    pthread_mutex_unlock(&ponyPermissionsMutex);            
-    
-    for(int i = 0; i < data->size - data->numberOfPonies; i++ )
-    { 
-        pthread_mutex_lock(&ponySuitMutex);
-        pthread_cond_wait(&ponySuitCond, &ponySuitMutex); //wait for signal from listening thread 
-        pthread_mutex_unlock(&ponySuitMutex);
-        pthread_mutex_lock(&ponyPermissionsMutex);            
-        data->necessaryPonyPermissions--;
-        pthread_mutex_unlock(&ponyPermissionsMutex);
-    }
+    //wait for enough permissions    
+    pthread_cond_wait(&ponySuitCond, &ponySuitMutex); //wait for signal from listening thread 
+    pthread_mutex_unlock(&ponySuitMutex);
 
     printf("[%d]: got PONY suit!\n", data->rank); 
 }
@@ -773,6 +769,7 @@ int main(int argc, char **argv)
     data->boardedBoatCapacity = 0;
     data->boats = new int[data->numberOfBoats];
     data->currentBoat = 0;
+    data->necessaryPonyPermissions = -1;
 
     srand(time(NULL));      
     if (rank == 0)
