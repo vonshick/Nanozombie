@@ -1,4 +1,4 @@
 #!/bin/bash
 
 mpic++ main.cpp -lpthread -o main 
-mpirun main 4 4 21 20
+mpirun -np 4 main 2 2 21 20
