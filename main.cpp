@@ -20,6 +20,8 @@
 
 //TODO: find and do todos :)
 //TODO: boats and boatsmutex, how boat select depart and end of trip affect it? can it set boat as available when its not (i.e. late message)?
+//TODO: should wait for boat select from particular visitor and queue up others? no it may delay everything, would need queues for later massages as well
+    // boat can start before everyone is onboard! or maybe new free boat cant be selected until everyone confirms depart?
 
 //TODO: answers handling when on_board, on_trip?
 #define ON_TRIP 40
