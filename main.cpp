@@ -271,7 +271,7 @@ void *listen(void *voidData)
                 break;
             case BOAT_DEPART:
                 {
-                    printf("[%d]: received BOAT_DEPART from [%d] (lamport: %d)\n", data->rank, status.MPI_SOURCE, printLamport);
+                    printf("[%d]: received BOAT_DEPART(%d) from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
                     pthread_mutex_lock(&boatsMutex);
                     data->boats[buffer->boatId] = 0;
                     pthread_mutex_unlock(&boatsMutex);
@@ -299,7 +299,7 @@ void *listen(void *voidData)
                 break;
             case BOAT_SELECT:
                 {
-                    printf("[%d]: received BOAT SELECT from [%d] (lamport: %d)\n", data->rank, status.MPI_SOURCE, printLamport);
+                    printf("[%d]: received BOAT SELECT(%d) from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
                     pthread_mutex_lock(&currentBoatMutex);
                     data->currentBoat = buffer->boatId;    //set id of selected boat as current boarding boat
                     pthread_mutex_unlock(&currentBoatMutex);
@@ -333,7 +333,7 @@ void *listen(void *voidData)
                     pthread_mutex_lock(&conditionMutex);
                     if(data->condition == ON_TRIP && buffer->boatId == data->boardedBoat)
                     {   //if i'm onboard
-                        printf("[%d]: TRIP FINISHED! received END OF TRIP from [%d] (lamport: %d)\n", data->rank, status.MPI_SOURCE, printLamport);
+                        printf("[%d]: TRIP FINISHED! received END OF TRIP(%d) from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
                         pthread_mutex_unlock(&conditionMutex);
                         data->boardedBoat = -1;     // get off board
                         pthread_mutex_unlock(&boardedBoatMutex);
@@ -412,40 +412,15 @@ void clearLists(Data* data){
     data->boatRequestList.clear();
 }
 
-void findFreeBoat(Data *data, int current)
+void sendBoatSelect(Data *data, int boatId)
 {
-    pthread_mutex_lock(&findingFreeBoatMutex);
-    for(int i = 0;i < data->numberOfBoats;i++)
-    {
-        pthread_mutex_lock(&boatsMutex);
-        if(data->boats[i] == 0)
-        {
-            pthread_mutex_unlock(&boatsMutex);
-            continue;
-        }
-        else
-        {
-            pthread_mutex_unlock(&boatsMutex);
-            pthread_mutex_lock(&currentBoatMutex);            
-            data->currentBoat = i;
-            pthread_mutex_unlock(&currentBoatMutex);
-            pthread_mutex_unlock(&findingFreeBoatMutex);
-            return;
-        }
-    }
-    //no free boats available now
-    pthread_mutex_lock(&currentBoatMutex);
-    data->currentBoat = -1; // -1 for visitor with priority for boarding
-    pthread_mutex_unlock(&currentBoatMutex);
-    pthread_mutex_unlock(&findingFreeBoatMutex);
-    printf("[%d]: !!! WAITING  !!! Didn't find free boat to select.\n", data->rank);
-    sem_wait(&waitForBoatReturnSem); //wait for listening thread to set first boat that returned as currentBoat
-    printf("[%d]: !!! WOKEN UP !!! A boat has returned.\n", data->rank);
-    //some boat has returned
+    pthread_mutex_lock(&lamportMutex);
+    data->lamportClock += 1;
+    int selectTime = data->lamportClock;
+    pthread_mutex_unlock(&lamportMutex); 
     Packet *message = new Packet;
-    pthread_mutex_lock(&currentBoatMutex);
-    message->boatId = data->currentBoat;
-    pthread_mutex_unlock(&currentBoatMutex);
+    message->lamportClock = selectTime;
+    message->boatId = boatId;
     pthread_mutex_lock(&boatsMutex);
     message->capacity = data->boats[data->currentBoat];
     pthread_mutex_unlock(&boatsMutex);
@@ -459,10 +434,47 @@ void findFreeBoat(Data *data, int current)
             int printLamport = data->lamportClock;
             pthread_mutex_unlock(&lamportMutex);          
             MPI_Send(message, sizeof(Packet), MPI_BYTE, i, BOAT_SELECT, MPI_COMM_WORLD);
-            printf("[%d] -> [%d]: sent BOAT SELECT message: boatId: %d, capacity: %d (lamport: %d)\n", data->rank, i, message->boatId, message->capacity, printLamport);
+            printf("[%d] -> [%d]: sent BOAT SELECT(%d) message: boatId: %d, capacity: %d (lamport: %d)\n", data->rank, i, selectTime, message->boatId, message->capacity, printLamport);
         }
     } 
     delete message;
+}
+
+void findFreeBoat(Data *data, int current)
+{
+    pthread_mutex_lock(&findingFreeBoatMutex);
+    for(int i = 0;i < data->numberOfBoats;i++)
+    {
+        pthread_mutex_lock(&boatsMutex);
+        if(data->boats[i] == 0)
+        {
+            pthread_mutex_unlock(&boatsMutex);
+            continue;
+        }
+        else
+        {   //found free boat
+            pthread_mutex_unlock(&boatsMutex);
+            pthread_mutex_lock(&currentBoatMutex);            
+            data->currentBoat = i;
+            pthread_mutex_unlock(&currentBoatMutex);
+            pthread_mutex_unlock(&findingFreeBoatMutex);
+            sendBoatSelect(data, i);
+            return;
+        }
+    }
+    //no free boats available now
+    pthread_mutex_lock(&currentBoatMutex);
+    data->currentBoat = -1; // -1 is status for visitor with priority for boarding
+    pthread_mutex_unlock(&currentBoatMutex);
+    pthread_mutex_unlock(&findingFreeBoatMutex);
+    printf("[%d]: !!! WAITING  !!! Didn't find free boat to select.\n", data->rank);
+    sem_wait(&waitForBoatReturnSem); //wait for listening thread to set first boat that returned as currentBoat
+    printf("[%d]: !!! WOKEN UP !!! A boat has returned.\n", data->rank);
+    //some boat has returned
+    pthread_mutex_lock(&currentBoatMutex);
+    int foundBoat = data->currentBoat;
+    pthread_mutex_unlock(&currentBoatMutex);
+    sendBoatSelect(data, foundBoat);
     return;
 }
 
@@ -625,7 +637,7 @@ void placeVisitorsInBoats(Data *data)
             printf("[%d]: DIDN'T FIND slot on BOAT[%d] for %d element in boats queue: tourist [%d] with lamport %d\n", data->rank, boardingBoat, i, boatSlotRequest.id, boatSlotRequest.lamportClock);
 
             //wait for next boat: new value of data->currentBoat, message: BOAT SELECT
-            printf("[%d]: !!! WAITING  !!! For boarding boat[%d] change.\n", data->rank, boardingBoat);
+            printf("[%d]: !!! WAITING  !!! For boarding boat[%d] change (BOAT SELECT).\n", data->rank, boardingBoat);
             sem_wait(&waitForBoatSelectSem); //wait for listening thread to receive BOAT SELECT with next boat
             printf("[%d]: !!! WOKEN UP !!! Boarding boat[%d] has changed to [%d].\n", data->rank, boardingBoat, data->currentBoat);
 
