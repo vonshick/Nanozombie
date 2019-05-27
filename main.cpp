@@ -19,6 +19,7 @@
 #define WANNA_BOAT_RESPONSE 21      //response to 20, capacity > 0 means process wants a place on the boat (capacity == 0 - don't want a place)
 
 //TODO: find and do todos :)
+//TODO: boats and boatsmutex, how boat select depart and end of trip affect it? can it set boat as available when its not (i.e. late message)?
 
 //TODO: answers handling when on_board, on_trip?
 #define ON_TRIP 40
@@ -41,7 +42,6 @@ sem_t waitForBoatSelectSem;
 sem_t waitForEndOfTripSem;
 sem_t waitForDepartureSem;
 
-// TODO: chcek if they are necessary.. only 2 threads so finf conlicts
 pthread_mutex_t lamportMutex;               //CONFIRMED
 pthread_mutex_t currentBoatMutex;           //CONFIRMED  //TODO: check if needed with respect to cond mutexes
 pthread_mutex_t boatsMutex;                 //CONFIRMED  //check if needed with respect to cond mutexes and check if shoudl be associated with currentBoatMutex
@@ -506,8 +506,9 @@ void manageTheTrip(Data* data)
     data->boardedBoat = -1;   
     pthread_mutex_unlock(&boardedBoatMutex);
     message->capacity = data->boardedBoatCapacity;
-    //TODO: boatsMutex????
+    pthread_mutex_lock(&boatsMutex);
     data->boats[message->boatId] = data->boardedBoatCapacity; // add boat back to the list of free boats
+    pthread_mutex_unlock(&boatsMutex);
     data->boardedBoatCapacity = 0;
 
 
@@ -586,8 +587,9 @@ void getOnBoat(Data *data, int boatId)
 
 void startTrip(Data *data, int departingBoatId, int capacity, int captainId, int startTime)
 {
-    //TODO: mutex?
+    pthread_mutex_lock(&boatsMutex);
     data->boats[departingBoatId] = 0; //mark boat as unavailable (on trip)
+    pthread_mutex_unlock(&boatsMutex);
 
     Packet *message = new Packet;
     message->captainId = captainId;
@@ -657,14 +659,14 @@ void placeVisitorsInBoats(Data *data)
         int startTime = data->lamportClock;
         pthread_mutex_unlock(&lamportMutex); 
         captainId = (*data->boatRequestList[(data->boatRequestList).size()-1]).id; // last tourist who came into boat becomes a captain
-        printf("[%d]: NO PLACE on BOAT[%d] for me! DEPARTING BOAT! (lamport: %d)\n", data->rank, data->currentBoat, startTime);              
-        startTrip(data, boardingBoat, data->boats[boardingBoat], captainId, startTime);
+        printf("[%d]: NO PLACE on BOAT[%d] for me! DEPARTING BOAT! (lamport: %d)\n", data->rank, data->currentBoat, startTime);
+        pthread_mutex_lock(&boatsMutex);
+        int capacity = data->boats[boardingBoat];
+        pthread_mutex_unlock(&boatsMutex);
+        startTrip(data, boardingBoat, capacity, captainId, startTime);
         findFreeBoat(data, boardingBoat);
         //after new boat is selected for boarding, he can get onboard because every boat has space for at least one visitor
     }
-
-    //TODO: captain should wait for all to be onboard. After findFreeBoat started sending BOAT SELECT, DEPART might be skipped if received before getOnBoat
-    // probably need list of passangers
 
     //get onboard and wait for departure
     getOnBoat(data, data->currentBoat);
@@ -773,8 +775,6 @@ void visit(Data *data)
         //here the trip has just ended, but condition = ON_TRIP until pony is freed
 
         //free your pony suit - send permissions
-
-        //TODO: mutex for queue, condition mutex scope expand?
 
         printLamport = setCondition(data, IDLE);
         printf("[%d]: I'M IDLE! Freeing pony: Sending queued permissions (lamport: %d)\n", data->rank, printLamport);
