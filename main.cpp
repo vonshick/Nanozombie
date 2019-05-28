@@ -17,11 +17,16 @@
 #define WANNA_PONY_RESPONSE 11      //response to 10       
 #define WANNA_BOAT 20               //has pony, waiting for boat
 #define WANNA_BOAT_RESPONSE 21      //response to 20, capacity > 0 means process wants a place on the boat (capacity == 0 - don't want a place)
+#define ONBOARD 30                  //onboard, ready for departure
+#define CONFIRM_ONBOARD 31          //captain asks if passanger is onboard before he starts trip
+#define CONFIRM_ONBOARD_RESPONSE 32 //passanger send response when he is onboard and ready for depart
 
 //TODO: find and do todos :)
 //TODO: boats and boatsmutex, how boat select depart and end of trip affect it? can it set boat as available when its not (i.e. late message)?
 //TODO: should wait for boat select from particular visitor and queue up others? no it may delay everything, would need queues for later massages as well
     // boat can start before everyone is onboard! or maybe new free boat cant be selected until everyone confirms depart?
+//TODO: must start if nobody is behind in queue for place on boat!
+//TODO: make sure everyone who didnt get on boat waits until boat departs
 
 //TODO: answers handling when on_board, on_trip?
 #define ON_TRIP 40
@@ -44,6 +49,8 @@ sem_t waitForBoatSelectSem;
 sem_t waitForEndOfTripSem;
 sem_t waitForDepartureSem;
 
+
+//TODO: recheck mutexes after adding new case's in listening thread and modyfying functions in main thread
 pthread_mutex_t lamportMutex;               //CONFIRMED
 pthread_mutex_t currentBoatMutex;           //CONFIRMED  //TODO: check if needed with respect to cond mutexes
 pthread_mutex_t boatsMutex;                 //CONFIRMED  //check if needed with respect to cond mutexes and check if shoudl be associated with currentBoatMutex
@@ -60,7 +67,6 @@ struct Packet
     Packet(int idArg, int cap, bool onTrip, int captId, int lampCl) : boatId(idArg), capacity(cap), captainId(captId), lamportClock(lampCl) { }
     int boatId;
     int capacity;       
-    // bool boatOnTrip;   //true - on trip, false - boat in port
     int captainId; //process being captain on current trip
     int lamportClock;
 };
@@ -100,8 +106,10 @@ struct Data
     int maxVisitorCapacity;
     int visitorCapacity;  //capacity of visitor for current trip
     queue<int> ponyQueue;
+    //TODO: probably get rid of it
     queue<BoatDepartureMessage*> boatDeparturesQueue;
     bool hasFyllyCheckedBoatDeparturesQueue;
+    //
     vector<BoatSlotRequest*> boatRequestList; //list of requests for place on boat
     int rank; 
     int size; 
@@ -113,7 +121,11 @@ struct CompareBoatSlotRequest
 {
     bool operator()(BoatSlotRequest * lhs, BoatSlotRequest * rhs)
     {
-        return lhs->lamportClock < rhs->lamportClock;
+        if(lhs->lamportClock != rhs->lamportClock)
+        {
+            return lhs->lamportClock < rhs->lamportClock;
+        }
+        return lhs->id < rhs->id;
     }
 };
 
@@ -145,12 +157,12 @@ void *listen(void *voidData)
         {
             case WANNA_PONY:
                 {    
-                    printf("[%d]: received WANNA PONY(%d) from [%d] (lamport: %d).\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
+                    printf("[%d]       : received WANNA PONY(%d) from [%d] (lamport: %d).\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
                     pthread_mutex_lock(&conditionMutex);
                     if (data->condition == WANNA_BOAT || data->condition == ON_TRIP)
                     {
                         pthread_mutex_unlock(&conditionMutex);
-                        printf("[%d]: added process [%d] WANNA PONY(%d) to PONY QUEUE\n", data->rank, status.MPI_SOURCE, buffer->lamportClock);                          
+                        printf("[%d]       : added process [%d] WANNA PONY(%d) to PONY QUEUE\n", data->rank, status.MPI_SOURCE, buffer->lamportClock);                          
                         (data->ponyQueue).push(status.MPI_SOURCE);
                     }
                     else
@@ -160,7 +172,7 @@ void *listen(void *voidData)
                         {
                             pthread_mutex_unlock(&recentRequestClockMutex);
                             pthread_mutex_unlock(&conditionMutex);
-                            printf("[%d]: added process [%d] WANNA PONY(%d) to PONY QUEUE\n", data->rank, status.MPI_SOURCE, buffer->lamportClock);                          
+                            printf("[%d]       : added process [%d] WANNA PONY(%d) to PONY QUEUE\n", data->rank, status.MPI_SOURCE, buffer->lamportClock);                          
                             (data->ponyQueue).push(status.MPI_SOURCE);   
                         }
                         else
@@ -186,7 +198,7 @@ void *listen(void *voidData)
                     {
                         pthread_mutex_unlock(&recentRequestClockMutex);
                         pthread_mutex_unlock(&conditionMutex);                        
-                        printf("[%d]: received old PONY PERMISSION(%d) from [%d], skipping. (lamport: %d)\n", data->rank, response->lamportClock, status.MPI_SOURCE, printLamport);
+                        printf("[%d]       : received old PONY PERMISSION(%d) from [%d], skipping. (lamport: %d)\n", data->rank, response->lamportClock, status.MPI_SOURCE, printLamport);
                     }
                     else
                     {
@@ -195,23 +207,23 @@ void *listen(void *voidData)
                         data->necessaryPonyPermissions--;
                         if(data->necessaryPonyPermissions == 0)
                         {
-                            printf("[%d]: received last required PONY PERMISSION(%d) from [%d] (lamport: %d)\n", data->rank, response->lamportClock, status.MPI_SOURCE, printLamport);
+                            printf("[%d]       : received last required PONY PERMISSION(%d) from [%d] (lamport: %d)\n", data->rank, response->lamportClock, status.MPI_SOURCE, printLamport);
                             sem_post(&ponyPermissionsSem);
                         }
                         else if(data->necessaryPonyPermissions > 0)
                         {
-                            printf("[%d]: received PONY PERMISSION(%d) from [%d]. Need %d more. (lamport: %d)\n", data->rank, response->lamportClock, status.MPI_SOURCE, data->necessaryPonyPermissions, printLamport);
+                            printf("[%d]       : received PONY PERMISSION(%d) from [%d]. Need %d more. (lamport: %d)\n", data->rank, response->lamportClock, status.MPI_SOURCE, data->necessaryPonyPermissions, printLamport);
                         }
                         else
                         {
-                            printf("[%d]: received unnecessary PONY PERMISSION(%d) from [%d]. (lamport: %d)\n",  data->rank, response->lamportClock, status.MPI_SOURCE, printLamport);
+                            printf("[%d]       : received unnecessary PONY PERMISSION(%d) from [%d]. (lamport: %d)\n",  data->rank, response->lamportClock, status.MPI_SOURCE, printLamport);
                         }
                     }
                 }
                 break;
             case WANNA_BOAT:
                 {
-                    printf("[%d]: received WANNA BOAT(%d) from [%d] (lamport: %d).\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
+                    printf("[%d]       : received WANNA BOAT(%d) from [%d] (lamport: %d).\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
                     pthread_mutex_lock(&conditionMutex);
                     if(data->condition == WANNA_BOAT)
                     {
@@ -233,7 +245,7 @@ void *listen(void *voidData)
                     MPI_Send( response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, WANNA_BOAT_RESPONSE, MPI_COMM_WORLD);
                     if(response->capacity == 0)
                     {
-                        printf("[%d] -> [%d]: sent WANNA BOAT(%d) response I DON WANT BOAT (lamport: %d)\n", data->rank, status.MPI_SOURCE, buffer->lamportClock, printLamport);                                          
+                        printf("[%d] -> [%d]: sent WANNA BOAT(%d) response I DONT WANT BOAT (lamport: %d)\n", data->rank, status.MPI_SOURCE, buffer->lamportClock, printLamport);                                          
                     }
                     else
                     {
@@ -243,25 +255,23 @@ void *listen(void *voidData)
                 break;
             case WANNA_BOAT_RESPONSE:
                 {
+                    pthread_mutex_lock(&recentRequestClockMutex);
+                    int recentRequestClock = data->recentRequestClock;
+                    pthread_mutex_unlock(&recentRequestClockMutex);
                     if(response->capacity == 0)
                     {
-                        printf("[%d]: received WANNA BOAT(%d) response I DON WANT BOAT from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
+                        printf("[%d]       : received WANNA BOAT(%d) response I DON WANT BOAT from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
                     }
                     else
                     {
-                        pthread_mutex_lock(&recentRequestClockMutex);
-                        printf("[%d]: received WANNA BOAT(%d) response I WANT BOAT(%d) from [%d] (lamport: %d)\n", data->rank, data->recentRequestClock, buffer->lamportClock, status.MPI_SOURCE, printLamport);
-                        pthread_mutex_unlock(&recentRequestClockMutex);
+                        printf("[%d]       : received WANNA BOAT(%d) response I WANT BOAT(%d) from [%d] (lamport: %d)\n", data->rank, recentRequestClock, buffer->lamportClock, status.MPI_SOURCE, printLamport);
                     }
-                    pthread_mutex_lock(&recentRequestClockMutex);
-                    if(buffer->capacity == 0 || buffer->lamportClock > data->recentRequestClock) {
-                        pthread_mutex_unlock(&recentRequestClockMutex);
-                        //if process don't want a place on boat or place request is older - don't queue up his answer (decrease required number of answers in queue)
+                    if(buffer->capacity == 0) {
+                        //if process don't want a place on boat - don't queue up his answer (decrease required number of answers in queue)
                         data->necessaryBoatAnswers--;
                     }
                     else
                     {    //queue up the answer for place on boat
-                        pthread_mutex_unlock(&recentRequestClockMutex);
                         BoatSlotRequest *boatSlotRequest = new BoatSlotRequest(status.MPI_SOURCE, buffer->capacity, buffer->lamportClock);
                         (data->boatRequestList).push_back(boatSlotRequest);
                     }
@@ -273,7 +283,7 @@ void *listen(void *voidData)
                 break;
             case BOAT_DEPART:
                 {
-                    printf("[%d]: received BOAT_DEPART(%d) from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
+                    printf("[%d]       : received BOAT_DEPART(%d) from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
                     pthread_mutex_lock(&boatsMutex);
                     data->boats[buffer->boatId] = 0;
                     pthread_mutex_unlock(&boatsMutex);
@@ -301,7 +311,7 @@ void *listen(void *voidData)
                 break;
             case BOAT_SELECT:
                 {
-                    printf("[%d]: received BOAT SELECT(%d) from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
+                    printf("[%d]       : received BOAT SELECT(%d) from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
                     pthread_mutex_lock(&currentBoatMutex);
                     data->currentBoat = buffer->boatId;    //set id of selected boat as current boarding boat
                     pthread_mutex_unlock(&currentBoatMutex);
@@ -335,7 +345,7 @@ void *listen(void *voidData)
                     pthread_mutex_lock(&conditionMutex);
                     if(data->condition == ON_TRIP && buffer->boatId == data->boardedBoat)
                     {   //if i'm onboard
-                        printf("[%d]: TRIP FINISHED! received END OF TRIP(%d) from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
+                        printf("[%d]       : TRIP FINISHED! received END OF TRIP(%d) from [%d] (lamport: %d)\n", data->rank, buffer->lamportClock, status.MPI_SOURCE, printLamport);
                         pthread_mutex_unlock(&conditionMutex);
                         data->boardedBoat = -1;     // get off board
                         pthread_mutex_unlock(&boardedBoatMutex);
@@ -345,7 +355,7 @@ void *listen(void *voidData)
                     {
                         pthread_mutex_unlock(&conditionMutex);
                         pthread_mutex_unlock(&boardedBoatMutex);
-                        printf("[%d]: received END OF TRIP from [%d]. NOT MY TRIP. (lamport: %d)\n", data->rank, status.MPI_SOURCE, printLamport);
+                        printf("[%d]       : received END OF TRIP from [%d]. NOT MY TRIP. (lamport: %d)\n", data->rank, status.MPI_SOURCE, printLamport);
 
                         pthread_mutex_lock(&findingFreeBoatMutex);
                         pthread_mutex_lock(&currentBoatMutex);
@@ -364,7 +374,7 @@ void *listen(void *voidData)
                 }
                 break;
             default:
-                printf("[%d]: WRONG MPI_TAG(%d) FROM [%d] (lamport: %d)\n", data->rank, status.MPI_TAG, status.MPI_SOURCE, printLamport);     
+                printf("[%d]       : WRONG MPI_TAG(%d) FROM [%d] (lamport: %d)\n", data->rank, status.MPI_TAG, status.MPI_SOURCE, printLamport);     
                 break; 
         }
     }
@@ -469,9 +479,9 @@ void findFreeBoat(Data *data, int current)
     data->currentBoat = -1; // -1 is status for visitor with priority for boarding
     pthread_mutex_unlock(&currentBoatMutex);
     pthread_mutex_unlock(&findingFreeBoatMutex);
-    printf("[%d]: !!! WAITING  !!! Didn't find free boat to select.\n", data->rank);
+    printf("[%d]       : !!! WAITING  !!! Didn't find free boat to select.\n", data->rank);
     sem_wait(&waitForBoatReturnSem); //wait for listening thread to set first boat that returned as currentBoat
-    printf("[%d]: !!! WOKEN UP !!! A boat has returned.\n", data->rank);
+    printf("[%d]       : !!! WOKEN UP !!! A boat has returned.\n", data->rank);
     //some boat has returned
     pthread_mutex_lock(&currentBoatMutex);
     int foundBoat = data->currentBoat;
@@ -484,7 +494,7 @@ void findFreeBoat(Data *data, int current)
 void waitForEndOfTrip(Data *data)
 {
     int printLamport = setCondition(data, ON_TRIP);
-    printf("[%d]: IM ON TRIP! (lamport: %d)\n", data->rank, printLamport);
+    printf("[%d]       : IM ON TRIP! (lamport: %d)\n", data->rank, printLamport);
     sem_wait(&waitForEndOfTripSem); //wait for listening thread to receive END OF TRIP
 }
 
@@ -492,7 +502,7 @@ void waitForEndOfTrip(Data *data)
 void manageTheTrip(Data* data)
 {
     int printLamport = setCondition(data, ON_TRIP);
-    printf("[%d]: IM ON TRIP (AS CAPTAIN)! (lamport: %d)\n", data->rank, printLamport);
+    printf("[%d]       : IM ON TRIP (AS CAPTAIN)! (lamport: %d)\n", data->rank, printLamport);
 
     Packet *message = new Packet;
 
@@ -554,9 +564,9 @@ void waitForDeparture(Data *data)
         {   //if departure not detected in queue, wait for next new elements after next received BOAT_DEPART
             data->hasFyllyCheckedBoatDeparturesQueue = true;
             pthread_mutex_unlock(&boatDeparturesQueueMutex);
-            printf("[%d]: !!! WAITING  !!! For something new in boatDeparturesQueue.\n", data->rank);
+            printf("[%d]       : !!! WAITING  !!! For something new in boatDeparturesQueue.\n", data->rank);
             sem_wait(&waitForDepartureSem); //wait for listening thread to receive BOAT_DEPART
-            printf("[%d]: !!! WOKEN UP !!! There's something new in boatDeparturesQueue!\n", data->rank);
+            printf("[%d]       : !!! WOKEN UP !!! There's something new in boatDeparturesQueue!\n", data->rank);
         }
     }
 
@@ -573,18 +583,6 @@ void waitForDeparture(Data *data)
     }
     delete boatDeparture;
     //trip has just ended
-}
-
-void getOnBoat(Data *data, int boatId)
-{
-    data->boardedBoat = boatId;
-    pthread_mutex_lock(&lamportMutex);
-    int printLamport = data->lamportClock;
-    pthread_mutex_unlock(&lamportMutex); 
-    printf("[%d]: got on BOAT[%d]! Waiting for BOAT_DEPART... (lamport: %d)\n", data->rank, boatId, printLamport);
-
-    //wait for departure
-    waitForDeparture(data);
 }
 
 void startTrip(Data *data, int departingBoatId, int capacity, int captainId, int startTime)
@@ -613,6 +611,75 @@ void startTrip(Data *data, int departingBoatId, int capacity, int captainId, int
     delete message;
 }
 
+void getOnBoard(Data *data, int boardingBoat, int *passangers, int passangersCount, bool captain)
+{
+    data->boardedBoat = boardingBoat;
+    int onboardTime = setCondition(data, ONBOARD);
+    printf("[%d]       : IM ONBOARD! (lamport: %d)\n", data->rank, printLamport);
+
+    //TODO: create case in listening thread, set passangersCount as num of responses, wait for signal
+
+    if(captain)
+    { //ask and wait for passangers
+        Packet *message = new Packet;
+        message->boatId = boardingBoat;
+        message->lamportClock = onboardTime;
+        for(int i = 0; i < data->size ;i++)
+        {
+            if(passangers[i])
+            {
+                pthread_mutex_lock(&lamportMutex);
+                data->lamportClock += 1;
+                int printLamport = data->lamportClock;
+                pthread_mutex_unlock(&lamportMutex);
+                MPI_Send(message, sizeof(Packet), MPI_BYTE, i, CONFIRM_ONBOARD, MPI_COMM_WORLD);    //send depart message
+                printf("[%d] -> [%d]: captain sent CONFIRM_ONBOARD(%d) to passanger: departingBoatId: %d (lamport: %d)\n", data->rank, i, onboardTime, departingBoatId,, printLamport);          
+            }
+        } 
+    }
+    else
+    {
+        //wait for captain ask
+        //TODO: if captain didnt ask and boat departed, go back to finding place on next boat.
+    }
+
+    //now visitor has place on boat and must check if he starts the trip (next one has not enough space)
+    boatSlotRequest = *(data->boatRequestList[i]);
+    if(boatSlotRequest.capacity > capacityLeft)    //if no place for him, start trip and find next boat for boarding
+    {
+        pthread_mutex_lock(&lamportMutex);
+        int startTime = data->lamportClock;
+        pthread_mutex_unlock(&lamportMutex); 
+        captain = (*data->boatRequestList[(data->boatRequestList).size()-1]).id; // last tourist who came into boat becomes a captain
+        printf("[%d]       : NO PLACE on BOAT[%d] for next tourist[%d]! DEPARTING BOAT! (lamport: %d)\n", data->rank, data->currentBoat, startTime);
+        pthread_mutex_lock(&boatsMutex);
+        int capacity = data->boats[boardingBoat];
+        pthread_mutex_unlock(&boatsMutex);
+
+        //TODO: startTrip: wait for confirmation from passangers that they are onboard
+        
+        startTrip(data, boardingBoat, capacity, captain, startTime);
+        findFreeBoat(data, boardingBoat);
+        //after new boat is selected for boarding, he can get onboard because every boat has space for at least one visitor
+    }
+    else
+    {   //get onboard and wait for departure
+        //TODO: potential boat depart after I got onboard!!!! If I responded "i dont want a boat" to captain but then i want a boat
+        // solution: boat depart with list of passangers
+        // placing visitors in boats and getOnBoard in while, returns true if successful trip, false if departed without me?
+        //   Is this even possible?
+        waitForDeparture(data);
+    } 
+}
+
+void clearPassangers(bool *passangers, int size)
+{
+    for (i = 0; i < size; ++i) // Using for loop we are initializing
+    {
+        passangers[i] = false;
+    }
+}
+
 void placeVisitorsInBoats(Data *data)
 {
     pthread_mutex_lock(&currentBoatMutex);
@@ -622,28 +689,39 @@ void placeVisitorsInBoats(Data *data)
     int capacityLeft = data->boats[boardingBoat];
     pthread_mutex_unlock(&boatsMutex);    
 
-    int captainId = INT_MAX;
-    int boatRequestsNumber = (data->boatRequestList).size();
-
+    bool passangers[data->size] = {false};  //true for visitor who will be on current boat
+    int passangersCount = 0;
     int i = 0;
-    while(i < boatRequestsNumber) //runs until all visitors with lower lamport clock (higher priority) are placed on boats
+    BoatSlotRequest boatSlotRequest;
+    bool satisfiedMyRequest = false;
+    while(!satisfiedMyRequest) //runs until all visitors with higher priority are placed on boats and I found place as well - loop will break
     {
-        BoatSlotRequest boatSlotRequest = *(data->boatRequestList[i]);
+        boatSlotRequest = *(data->boatRequestList[i]);
         int visitorCapacity = boatSlotRequest.capacity;
+
         if(visitorCapacity <= capacityLeft)
         {
             capacityLeft -= visitorCapacity;
-            printf("[%d]: FOUND slot on BOAT[%d] for %d element in boats queue: tourist [%d] with lamport %d\n", data->rank, boardingBoat, i, boatSlotRequest.id, boatSlotRequest.lamportClock);
             i++;
+            if(boatSlotRequest.id == data->rank)
+            {   //found place for myself
+                printf("[%d]       : FOUND SLOT FOR MYSELF! I'M on BOAT[%d] (%d element in boats queue: tourist [%d] with lamport %d)\n", data->rank, boardingBoat, i, boatSlotRequest.id, boatSlotRequest.lamportClock);
+                satisfiedMyRequest = true;
+            }
+            else
+            {
+                passangers[boatSlotRequest.id] = true;
+                printf("[%d]       : FOUND slot on BOAT[%d] for %d element in boats queue: tourist [%d] with lamport %d\n", data->rank, boardingBoat, i, boatSlotRequest.id, boatSlotRequest.lamportClock);
+            }
         }
         else
         {
-            printf("[%d]: DIDN'T FIND slot on BOAT[%d] for %d element in boats queue: tourist [%d] with lamport %d\n", data->rank, boardingBoat, i, boatSlotRequest.id, boatSlotRequest.lamportClock);
+            printf("[%d]       : DIDN'T FIND slot on BOAT[%d] for %d element in boats queue: tourist [%d] with lamport %d\n", data->rank, boardingBoat, i, boatSlotRequest.id, boatSlotRequest.lamportClock);
 
             //wait for next boat: new value of data->currentBoat, message: BOAT SELECT
-            printf("[%d]: !!! WAITING  !!! For boarding boat[%d] change (BOAT SELECT).\n", data->rank, boardingBoat);
+            printf("[%d]       : !!! WAITING  !!! For boarding boat[%d] change (BOAT SELECT).\n", data->rank, boardingBoat);
             sem_wait(&waitForBoatSelectSem); //wait for listening thread to receive BOAT SELECT with next boat
-            printf("[%d]: !!! WOKEN UP !!! Boarding boat[%d] has changed to [%d].\n", data->rank, boardingBoat, data->currentBoat);
+            printf("[%d]       : !!! WOKEN UP !!! Boarding boat[%d] has changed to [%d].\n", data->rank, boardingBoat, data->currentBoat);
 
             // boat has changed, update loop variables
             pthread_mutex_lock(&currentBoatMutex);            
@@ -652,33 +730,30 @@ void placeVisitorsInBoats(Data *data)
             pthread_mutex_lock(&boatsMutex);
             capacityLeft = data->boats[boardingBoat];
             pthread_mutex_unlock(&boatsMutex);
+            clearPassangers(passangers, data->size);
+            passangersCount = 0;
         }
     }
-    //now visitor has the priority for place on boat
-    if(data->visitorCapacity > capacityLeft)    //if no place for him, start trip and find next boat for boarding
-    {
-        pthread_mutex_lock(&lamportMutex);
-        int startTime = data->lamportClock;
-        pthread_mutex_unlock(&lamportMutex); 
-        captainId = (*data->boatRequestList[(data->boatRequestList).size()-1]).id; // last tourist who came into boat becomes a captain
-        printf("[%d]: NO PLACE on BOAT[%d] for me! DEPARTING BOAT! (lamport: %d)\n", data->rank, data->currentBoat, startTime);
-        pthread_mutex_lock(&boatsMutex);
-        int capacity = data->boats[boardingBoat];
-        pthread_mutex_unlock(&boatsMutex);
-        startTrip(data, boardingBoat, capacity, captainId, startTime);
-        findFreeBoat(data, boardingBoat);
-        //after new boat is selected for boarding, he can get onboard because every boat has space for at least one visitor
+    bool captain = false;
+    if(i < (data->boatRequestList).size())
+    {   //if there is anybody behind me in list
+
+        // TODO: ^^ what if nobody is behind when I asked, but then somebody wants to get on boat - he might think he will get onboard but i will satrt trip!
+        //      is even it possible?
+        boatSlotRequest = *(data->boatRequestList[i]);  //next request: first behind me
+        //check if I'm captain: first behind me won't get place on this boat
+        if(boatSlotRequest.capacity > capacityLeft)    //if no place for him, start trip and find next boat for boarding
+        {
+            captain = true;
+        }
     }
-
-    //get onboard and wait for departure
-    getOnBoat(data, data->currentBoat);
+    else
+    {   //nobody behind me, I'm last who got on the boat
+        captain = true;
+    }
+    
+    getOnBoard(data, boardingBoat, passangers, passangersCount, captain);
     //trip has just ended
-
-    //TODO: what if somebody sits in boat for long after return? is it possible? maybe not: blocking send! check it
-    //no, send will proceed as listening thread listens all the time!!
-    //so we need synchronization? confirmations?
-    // SOLUTION: maybe set mpi tag to receive in listening thread?
-
 }
 
 void findPlaceOnBoat(Data *data,  Packet *message)
@@ -704,6 +779,11 @@ void findPlaceOnBoat(Data *data,  Packet *message)
     }
     //wait for all answers    
     sem_wait(&boatResponsesSem);
+    //insert your own request
+    pthread_mutex_lock(&recentRequestClockMutex);
+    int recentRequestClock = data->recentRequestClock;
+    pthread_mutex_unlock(&recentRequestClockMutex);
+    (data->boatRequestList).push_back(new BoatSlotRequest(data->rank, data->visitorCapacity, recentRequestClock));
 
     printf("\n[%d]: UNSORTED LIST:\n", data->rank);          
     for (vector<BoatSlotRequest*>::const_iterator i = (data->boatRequestList).begin(); i != (data->boatRequestList).end(); ++i)
@@ -730,9 +810,7 @@ void findPony(Data *data, Packet *message)
     data->necessaryPonyPermissions = data->size - data->numberOfPonies; //if we got (numberOfTourists - numberOfPonies) answers that suit is free we can be sure that's true and take it
     prepareToRequest(data, message, WANNA_PONY);
     //send wanna pony request
-    MPI_Send(message, sizeof(Packet), MPI_BYTE, 0, WANNA_PONY, MPI_COMM_WORLD); //send message about pony suit request 
-    printf("[%d] -> [0]: sent PONY(%d) request  (lamport: %d)\n", data->rank, message->lamportClock,  message->lamportClock); 
-    for(int i = 1; i < data->size; i++)
+    for(int i = 0; i < data->size; i++)
     {
         if(i != data->rank)
         {
@@ -745,13 +823,13 @@ void findPony(Data *data, Packet *message)
         }
     }    
     //wait for enough permissions
-    printf("[%d]: !!! WAITING  !!! for responses to WANNA_PONY(%d)) (lamport: %d)\n", data->rank, message->lamportClock, printLamport); 
+    printf("[%d]       : !!! WAITING  !!! for responses to WANNA_PONY(%d)) (lamport: %d)\n", data->rank, message->lamportClock, printLamport); 
     sem_wait(&ponyPermissionsSem);
 
     pthread_mutex_lock(&lamportMutex);
     printLamport = data->lamportClock;
     pthread_mutex_unlock(&lamportMutex);
-    printf("[%d]: !!! WOKEN UP !!! got PONY SUIT! (request WANNA_PONY(%d)) (lamport: %d)\n", data->rank, message->lamportClock, printLamport); 
+    printf("[%d]       : !!! WOKEN UP !!! got PONY SUIT! (request WANNA_PONY(%d)) (lamport: %d)\n", data->rank, message->lamportClock, printLamport); 
 }
 
 //main thread function, visitor logic
@@ -767,7 +845,7 @@ void visit(Data *data)
         pthread_mutex_lock(&lamportMutex);
         int printLamport = data->lamportClock;
         pthread_mutex_unlock(&lamportMutex);
-        printf("[%d]: I WANT A TRIP! (lamport: %d)\n", data->rank, printLamport);
+        printf("[%d]       : I WANT A TRIP! (lamport: %d)\n", data->rank, printLamport);
 
         //get pony suit
         findPony(data, message);
@@ -779,7 +857,7 @@ void visit(Data *data)
         //free your pony suit - send permissions
 
         printLamport = setCondition(data, IDLE);
-        printf("[%d]: I'M IDLE! Freeing pony: Sending queued permissions (lamport: %d)\n", data->rank, printLamport);
+        printf("[%d]       : I'M IDLE! Freeing pony: Sending queued permissions (lamport: %d)\n", data->rank, printLamport);
 
         for (int i = 0; i < (data->ponyQueue).size(); i++)
         { // send message to all tourists waiting for a pony suit
