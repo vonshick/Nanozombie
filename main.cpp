@@ -266,7 +266,6 @@ void *listen(void *voidData)
                 break;
             case WANNA_BOAT_RESPONSE:
                 {
-                    cout<<"aaaa"<<endl;
                     pthread_mutex_lock(&recentRequestClockMutex);
                     int recentRequestClock = data->recentRequestClock;
                     pthread_mutex_unlock(&recentRequestClockMutex);
@@ -281,7 +280,6 @@ void *listen(void *voidData)
                         BoatSlotRequest *boatSlotRequest = new BoatSlotRequest(status.MPI_SOURCE, buffer->capacity, buffer->lamportClockOfRequest);
                         (data->boatRequestList).push_back(boatSlotRequest);
                     }
-                     cout<<"(data->boatRequestList).size(): "<<(data->boatRequestList).size()<<" ,data->necessaryBoatResponses : "<< data->necessaryBoatResponses << endl;
                     if((data->boatRequestList).size() == data->necessaryBoatResponses)
                     {    //if all responses received
                         sem_post(&boatResponsesSem);
@@ -797,12 +795,10 @@ void findPlaceOnBoat(Data *data,  Packet *message)
             printf("[%d] -> [%d]: sent WANNA_BOAT(%d) request  (lamport: %d)\n", data->rank, i, message->lamportClockOfRequest, message->lamportClock);          
         }
     }
-    cout<<"wait for all answer"<<endl;
     
     //wait for all answers    
     sem_wait(&boatResponsesSem);
     //insert your own request
-    cout<<"got all"<<endl;
     pthread_mutex_lock(&recentRequestClockMutex);
     int recentRequestClock = data->recentRequestClock;
     pthread_mutex_unlock(&recentRequestClockMutex);
@@ -909,6 +905,31 @@ void semaphoresInit()
     sem_init(&currentBoatAckResponsesSem, 0, 0);
 }
 
+void check_thread_support(int provided) {
+    printf("THREAD SUPPORT: %d\n", provided);
+    switch (provided)
+    {
+    case MPI_THREAD_SINGLE:
+        printf("Brak wsparcia dla wątków, kończę\n");
+        fprintf(stderr, "Brak wystarczającego wsparcia dla wątków - wychodzę!\n");
+        MPI_Finalize();
+        exit(-1);
+        break;
+    case MPI_THREAD_FUNNELED:
+        printf("Tylko te wątki, ktore wykonaly mpi_init_thread mogą wykonać wołania do biblioteki mpi\n");
+        break;
+    case MPI_THREAD_SERIALIZED:
+        /* Potrzebne zamki wokół wywołań biblioteki MPI*/
+        printf("Tylko jeden watek naraz może wykonać wołania do biblioteki MPI\n");
+        break;
+    case MPI_THREAD_MULTIPLE:
+        printf("Pełne wsparcie dla wątków\n");
+        break;
+    default:
+        printf("Nikt nic nie wie\n");
+    }
+}
+
 int main(int argc, char **argv)
 {
     if(argc != 5)
@@ -931,8 +952,10 @@ int main(int argc, char **argv)
 	    cout << "We need at least 2 boats!\n";
 	    exit(0);
     }
-    int rank, size;
-    MPI_Init(&argc, &argv);
+    int rank, size, provided;
+    MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
+    check_thread_support(provided);
+    // MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
