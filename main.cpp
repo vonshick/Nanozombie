@@ -907,7 +907,11 @@ int main(int argc, char **argv)
 	    cout << "maxBoatCapacity must be greater or equal to maxVisitorCapacity\n";
 	    exit(0);
     }
-
+    if(atoi(argv[2]) > 1)
+    {
+	    cout << "We need at least 2 boats!\n";
+	    exit(0);
+    }
     int rank, size;
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
