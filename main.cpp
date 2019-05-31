@@ -11,7 +11,7 @@
 #include <bits/stdc++.h>
 #include <semaphore.h>
 
-//TODO: first in queue should select next boat..
+//TODO: two captains!
 
 //process statuses and message types (mpi tags)
 #define IDLE -1
@@ -122,6 +122,7 @@ struct Data
     int confirmOnboardResponses;
     int currentBoatAckResponses;
     bool *passangersDeparted;
+    int *lastWannaBoatKnowledge;  //lamport clocks of most recent WANNA BOAT request of all processes
 };
 
 //for sorting of boatRequestList vector
@@ -237,7 +238,10 @@ void *listen(void *voidData)
                     if(data->condition == WANNA_BOAT || data->condition == ONBOARD)
                     {
                         pthread_mutex_lock(&recentRequestClockMutex);
+                        pthread_mutex_lock(&lamportMutex);
                         response->lamportClockOfRequest = data->recentRequestClock;
+                        data->lastWannaBoatKnowledge[status.MPI_SOURCE] = data->lamportClock;
+                        pthread_mutex_unlock(&lamportMutex);
                         pthread_mutex_unlock(&recentRequestClockMutex);     
                         pthread_mutex_unlock(&conditionMutex);
                         response->capacity = data->visitorCapacity;
@@ -249,6 +253,7 @@ void *listen(void *voidData)
                     }
                     response->lamportClock = incrementLamport(data);
                     MPI_Send( response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, WANNA_BOAT_RESPONSE, MPI_COMM_WORLD);
+                    //he knows for sure if my request lamport is smallerMPI_Send( response, sizeof(Packet), MPI_BYTE, status.MPI_SOURCE, WANNA_BOAT_RESPONSE, MPI_COMM_WORLD);
                     if(response->capacity == 0)
                     {
                         printf("[%d] -> [%d]: sent WANNA BOAT(%d) response I DONT WANT BOAT (lamport: %d)\n", data->rank, status.MPI_SOURCE, buffer->lamportClockOfRequest, response->lamportClock);                                          
@@ -261,6 +266,7 @@ void *listen(void *voidData)
                 break;
             case WANNA_BOAT_RESPONSE:
                 {
+                    cout<<"aaaa"<<endl;
                     pthread_mutex_lock(&recentRequestClockMutex);
                     int recentRequestClock = data->recentRequestClock;
                     pthread_mutex_unlock(&recentRequestClockMutex);
@@ -275,6 +281,7 @@ void *listen(void *voidData)
                         BoatSlotRequest *boatSlotRequest = new BoatSlotRequest(status.MPI_SOURCE, buffer->capacity, buffer->lamportClockOfRequest);
                         (data->boatRequestList).push_back(boatSlotRequest);
                     }
+                     cout<<"(data->boatRequestList).size(): "<<(data->boatRequestList).size()<<" ,data->necessaryBoatResponses : "<< data->necessaryBoatResponses << endl;
                     if((data->boatRequestList).size() == data->necessaryBoatResponses)
                     {    //if all responses received
                         sem_post(&boatResponsesSem);
@@ -694,6 +701,7 @@ void placeVisitorsInBoats(Data *data)
         BoatSlotRequest boatSlotRequest;
         bool imOnBoard = false;
         bool boatIsFull = false;
+        bool canBeCaptain = true;
         int i = 0;
         pthread_mutex_lock(&holdBoatSelectMutex);
         while(!imOnBoard && !boatIsFull) //boarding a boat - runs until I'm on boat or boat is full
@@ -716,6 +724,11 @@ void placeVisitorsInBoats(Data *data)
                 {   //found place for someone before me in queue
                     passangersCount++; //here so captain won't be included
                     printf("[%d]       : FOUND slot on BOAT[%d] for %d element in boats queue: tourist [%d] with lamport %d\n", data->rank, boardingBoat, i-1, boatSlotRequest.id, boatSlotRequest.lamportClock);
+                    //check if he knows about my request
+                    if(data->recentRequestClock > data->lastWannaBoatKnowledge[boatSlotRequest.id])
+                    {
+                        canBeCaptain = false;
+                    }
                 }
             }
             else    //if boat is full
@@ -734,20 +747,23 @@ void placeVisitorsInBoats(Data *data)
         if(imOnBoard)  // if found a place, get on board. Else, boat was full and departed, so continue looking for place in next boat
         {  
             bool captain = false;
-            if(i < (data->boatRequestList).size())
-            {   //if there is anybody behind me in list
-                boatSlotRequest = *(data->boatRequestList[i]);  //next request: first behind me
-                //check if I'm captain: first behind me won't get place on this boat
-                if(boatSlotRequest.capacity > capacityLeft)    //if no place for him, start trip and find next boat for boarding
-                {
+            if(canBeCaptain)
+            {
+                if(i < (data->boatRequestList).size())
+                {   //if there is somebody behind me in list
+                    boatSlotRequest = *(data->boatRequestList[i]);  //next request: first behind me
+                    //check if I'm captain: first behind me won't get place on this boat
+                    if(boatSlotRequest.capacity > capacityLeft)    //if no place for him, start trip and find next boat for boarding
+                    {
+                        captain = true;
+                    }
+                }
+                else
+                {   //nobody behind me, I'm last who got on the boat
                     captain = true;
                 }
             }
-            else
-            {   //nobody behind me, I'm last who got on the boat
-                captain = true;
-            }
-            
+            printf("[%d]       : going onboard as captain: %d.\n", data->rank, captain);
             gotOnTrip = getOnBoard(data, boardingBoat, passangers, passangersCount, captain);
             if(!gotOnTrip)
             {   //if false, didn't manage to get on this trip
@@ -781,9 +797,12 @@ void findPlaceOnBoat(Data *data,  Packet *message)
             printf("[%d] -> [%d]: sent WANNA_BOAT(%d) request  (lamport: %d)\n", data->rank, i, message->lamportClockOfRequest, message->lamportClock);          
         }
     }
+    cout<<"wait for all answer"<<endl;
+    
     //wait for all answers    
     sem_wait(&boatResponsesSem);
     //insert your own request
+    cout<<"got all"<<endl;
     pthread_mutex_lock(&recentRequestClockMutex);
     int recentRequestClock = data->recentRequestClock;
     pthread_mutex_unlock(&recentRequestClockMutex);
@@ -940,6 +959,7 @@ int main(int argc, char **argv)
     data->boardedBoatCapacity = 0;
     data->boats = new int[data->numberOfBoats];
     data->currentBoat = 0;
+    data->lastWannaBoatKnowledge = new int[size];
 
     srand(time(NULL));      
     if (rank == 0)
