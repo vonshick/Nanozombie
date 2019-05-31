@@ -907,7 +907,7 @@ int main(int argc, char **argv)
 	    cout << "maxBoatCapacity must be greater or equal to maxVisitorCapacity\n";
 	    exit(0);
     }
-    if(atoi(argv[2]) > 1)
+    if(atoi(argv[2]) < 2)
     {
 	    cout << "We need at least 2 boats!\n";
 	    exit(0);
