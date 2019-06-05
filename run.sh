@@ -1,6 +1,6 @@
 #!/bin/bash
 
-mpic++ main.cpp -lpthread -o main 
+mpic++ main.cpp -Wall -lpthread -o main 
 # main args:
 # numberOfPonies, numberOfBoats, maxBoatCapacity, maxVisitorCapacity
-mpirun -np 3 main 2 2 11 6
+mpirun -np 4 main 2 2 11 6
